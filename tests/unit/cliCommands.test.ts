@@ -33,6 +33,15 @@ type SeedRecord = {
   sourceRoot?: string | null
 }
 
+type RepoSeedRecord = {
+  id: string
+  rootPath: string
+  repoName: string
+  remoteUrl?: string | null
+  currentBranch?: string | null
+  lastCommitAt?: string | null
+}
+
 describe('CLI commands', () => {
   let tempHome: string
 
@@ -127,6 +136,7 @@ describe('CLI commands', () => {
     runShow('file-1')
 
     expect(readLogLines()).toEqual([
+      'type: file',
       'name: overview',
       'path: /captures/documents/overview',
       'extension: ',
@@ -134,6 +144,30 @@ describe('CLI commands', () => {
       'source root: ',
     ])
     expect(process.exitCode).toBe(0)
+  })
+
+  it('prints indexed repo details', () => {
+    seedRepos([
+      {
+        id: 'repo-1',
+        rootPath: '/projects/machine-memory',
+        repoName: 'machine-memory',
+        remoteUrl: 'git@github.com:oneKn8/machine-memory.git',
+        currentBranch: 'main',
+        lastCommitAt: '2026-04-16T02:00:00.000Z',
+      },
+    ])
+
+    runShow('repo-1')
+
+    expect(readLogLines()).toEqual([
+      'type: repo',
+      'name: machine-memory',
+      'path: /projects/machine-memory',
+      'remote: git@github.com:oneKn8/machine-memory.git',
+      'branch: main',
+      'last commit: 2026-04-16T02:00:00.000Z',
+    ])
   })
 
   it('sets a non-zero exit code when show cannot find a record', () => {
@@ -167,6 +201,36 @@ function seedFiles(records: SeedRecord[]): void {
         row.extension ?? null,
         row.modifiedAt ?? null,
         row.sourceRoot ?? null,
+      )
+    }
+  })
+
+  insertMany(records)
+  db.close()
+}
+
+function seedRepos(records: RepoSeedRecord[]): void {
+  const db = openDatabase()
+  const insert = db.prepare(`
+    INSERT INTO repo_records (
+      id,
+      root_path,
+      repo_name,
+      remote_url,
+      current_branch,
+      last_commit_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `)
+
+  const insertMany = db.transaction((rows: RepoSeedRecord[]) => {
+    for (const row of rows) {
+      insert.run(
+        row.id,
+        row.rootPath,
+        row.repoName,
+        row.remoteUrl ?? null,
+        row.currentBranch ?? null,
+        row.lastCommitAt ?? null,
       )
     }
   })
