@@ -47,16 +47,7 @@ export function findMatches(
     )
     .all(...buildRepoLikeParams(queryTokens)) as RepoRow[]
 
-  const textRows = db
-    .prepare(
-      `
-      SELECT source_id, source_type, extractor_type, snippet(text_blobs_fts, 3, '[', ']', ' … ', 12) AS content
-      FROM text_blobs_fts
-      WHERE text_blobs_fts MATCH ?
-      LIMIT 10
-      `,
-    )
-    .all(toFtsQuery(parsed.normalizedQuery)) as TextRow[]
+  const textRows = searchTextRows(db, queryTokens)
 
   const results = new Map<string, SearchResult>()
 
@@ -158,6 +149,10 @@ function toFtsQuery(value: string): string {
     .join(' OR ')
 }
 
+function toStrictFtsQuery(tokens: string[]): string {
+  return tokens.map(token => `${escapeFtsToken(token)}*`).join(' AND ')
+}
+
 function escapeFtsToken(token: string): string {
   return token.replace(/[^a-z0-9_-]/gi, '')
 }
@@ -181,6 +176,30 @@ function scoreStringMatch(
 
 function normalizeSeparators(value: string): string {
   return value.replace(/[-_/\\.]+/g, ' ')
+}
+
+function searchTextRows(db: Database.Database, queryTokens: string[]): TextRow[] {
+  const queryRows = db.prepare(
+    `
+    SELECT source_id, source_type, extractor_type, snippet(text_blobs_fts, 3, '[', ']', ' … ', 12) AS content
+    FROM text_blobs_fts
+    WHERE text_blobs_fts MATCH ?
+    LIMIT 15
+    `,
+  )
+
+  const strictTokens = queryTokens
+    .map(escapeFtsToken)
+    .filter(Boolean)
+
+  if (strictTokens.length > 0) {
+    const strictRows = queryRows.all(toStrictFtsQuery(strictTokens)) as TextRow[]
+    if (strictRows.length > 0) {
+      return strictRows
+    }
+  }
+
+  return queryRows.all(toFtsQuery(queryTokens.join(' '))) as TextRow[]
 }
 
 function buildFileSearchSql(queryTokens: string[]): string {
