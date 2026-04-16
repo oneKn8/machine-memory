@@ -1,0 +1,33 @@
+{
+  "name": "machine-memory",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first machine search and memory engine",
+  "type": "module",
+  "bin": {
+    "mm": "./dist/cli/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli/main.ts",
+    "scan": "tsx src/cli/main.ts scan",
+    "find": "tsx src/cli/main.ts find",
+    "doctor": "tsx src/cli/main.ts doctor",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "commander": "^14.0.1",
+    "fast-glob": "^3.3.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.6.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
+
