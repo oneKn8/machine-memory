@@ -46,6 +46,7 @@ Recommended implementation stack for V1:
 
 ```bash
 mm scan
+mm scan --root /path/to/other/workspace
 mm find "where is gitonsteroid"
 mm find "image from Colorado"
 mm find "pdf about quantization"
@@ -65,6 +66,7 @@ mm doctor
 ### Scanning
 
 - Crawl configured roots
+- Support per-run root overrides for nonstandard machine layouts
 - Detect git repos
 - Extract repo remotes and metadata
 - Index common file metadata

@@ -28,6 +28,8 @@ export function findMatches(
   rawQuery: string,
 ): SearchResult[] {
   const parsed = parseQuery(rawQuery)
+  if (!parsed.normalizedQuery) return []
+
   const fileRows = db
     .prepare(
       `
@@ -68,18 +70,24 @@ export function findMatches(
   const results = new Map<string, SearchResult>()
 
   for (const row of fileRows) {
+    const score = scoreStringMatch(parsed.normalizedQuery, `${row.name} ${row.path}`)
     results.set(row.id, {
       resultId: row.id,
       resultType: 'file',
       title: row.name,
       path: row.path,
       whyMatched: 'Matched file name or path text',
-      score: 100,
+      score,
       lastModified: row.modified_at ?? undefined,
     })
   }
 
   for (const row of repoRows) {
+    const score = scoreStringMatch(
+      parsed.normalizedQuery,
+      `${row.repo_name} ${row.root_path} ${row.remote_url ?? ''}`,
+      120,
+    )
     results.set(row.id, {
       resultId: row.id,
       resultType: 'repo',
@@ -88,7 +96,7 @@ export function findMatches(
       whyMatched: row.remote_url
         ? `Matched repo name or remote URL (${row.remote_url})`
         : 'Matched repo name',
-      score: 110,
+      score,
       lastModified: row.last_commit_at ?? undefined,
     })
   }
@@ -146,5 +154,26 @@ function toFtsQuery(value: string): string {
 }
 
 function escapeFtsToken(token: string): string {
-  return token.replace(/"/g, '""')
+  return token.replace(/[^a-z0-9_-]/gi, '')
+}
+
+function scoreStringMatch(
+  query: string,
+  haystack: string,
+  baseScore = 100,
+): number {
+  const normalizedHaystack = normalizeSeparators(haystack.toLowerCase())
+  const normalizedQuery = normalizeSeparators(query.toLowerCase())
+
+  if (normalizedHaystack.includes(normalizedQuery)) {
+    return baseScore + 40
+  }
+
+  const tokens = normalizedQuery.split(/\s+/).filter(Boolean)
+  const tokenHits = tokens.filter(token => normalizedHaystack.includes(token)).length
+  return baseScore + tokenHits * 5
+}
+
+function normalizeSeparators(value: string): string {
+  return value.replace(/[-_/\\.]+/g, ' ')
 }

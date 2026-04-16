@@ -1,10 +1,15 @@
 import { getDefaultScanRoots } from '../../config/defaults.js'
+import { loadConfig } from '../../config/loadConfig.js'
 import { openDatabase } from '../../index/db.js'
 import { scanFiles } from '../../scanner/fileScanner.js'
 import { scanRepos } from '../../repos/gitRepoScanner.js'
 
-export function runScan(): void {
-  const roots = getDefaultScanRoots()
+type ScanOptions = {
+  root?: string[]
+}
+
+export function runScan(options: ScanOptions = {}): void {
+  const roots = resolveRoots(options)
   const db = openDatabase()
 
   const repoCount = scanRepos(db, roots)
@@ -21,3 +26,19 @@ export function runScan(): void {
   console.log(`Indexed files: ${fileCount}`)
 }
 
+function resolveRoots(options: ScanOptions): string[] {
+  if (options.root && options.root.length > 0) {
+    return uniqueRoots(options.root)
+  }
+
+  const config = loadConfig()
+  if (config.roots && config.roots.length > 0) {
+    return uniqueRoots(config.roots)
+  }
+
+  return uniqueRoots(getDefaultScanRoots())
+}
+
+function uniqueRoots(roots: string[]): string[] {
+  return [...new Set(roots.map(root => root.trim()).filter(Boolean))]
+}

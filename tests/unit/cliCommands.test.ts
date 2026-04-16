@@ -1,11 +1,28 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import * as osModule from 'node:os'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runFind } from '../../src/cli/commands/find.js'
 import { runShow } from '../../src/cli/commands/show.js'
 import { openDatabase } from '../../src/index/db.js'
+
+const mockState = vi.hoisted(() => ({
+  tempHome: '',
+}))
+
+vi.mock('node:os', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:os')>()
+  const homedir = (): string => mockState.tempHome || actual.homedir()
+
+  return {
+    ...actual,
+    default: {
+      ...actual,
+      homedir,
+    },
+    homedir,
+  }
+})
 
 type SeedRecord = {
   id: string
@@ -21,7 +38,7 @@ describe('CLI commands', () => {
 
   beforeEach(() => {
     tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-cli-'))
-    vi.spyOn(osModule, 'homedir').mockReturnValue(tempHome)
+    mockState.tempHome = tempHome
     vi.spyOn(console, 'log').mockImplementation(() => {})
     vi.spyOn(console, 'error').mockImplementation(() => {})
     process.exitCode = 0
@@ -29,6 +46,7 @@ describe('CLI commands', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    mockState.tempHome = ''
     process.exitCode = 0
     fs.rmSync(tempHome, { recursive: true, force: true })
   })

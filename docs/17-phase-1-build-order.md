@@ -25,6 +25,7 @@ Build:
 Build:
 
 - scan configured roots
+- support one-off root overrides for nonstandard machine layouts
 - detect git repos
 - read repo names and remotes
 - store repo records

@@ -1,12 +1,23 @@
 import { execFileSync } from 'node:child_process'
-import { getDefaultDatabasePath, getDefaultScanRoots } from '../../config/defaults.js'
+import {
+  getDefaultConfigPath,
+  getDefaultDatabasePath,
+  getDefaultScanRoots,
+} from '../../config/defaults.js'
+import { loadConfig } from '../../config/loadConfig.js'
 
 export function runDoctor(): void {
+  const config = loadConfig()
+  const roots = config.roots && config.roots.length > 0
+    ? config.roots
+    : getDefaultScanRoots()
+
   console.log('Machine Memory doctor')
   console.log('')
   console.log(`database: ${getDefaultDatabasePath()}`)
-  console.log('default roots:')
-  for (const root of getDefaultScanRoots()) {
+  console.log(`config: ${getDefaultConfigPath()}`)
+  console.log('scan roots:')
+  for (const root of roots) {
     console.log(`- ${root}`)
   }
   console.log('')
@@ -22,4 +33,3 @@ function hasBinary(name: string): boolean {
     return false
   }
 }
-

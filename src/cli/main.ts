@@ -12,7 +12,11 @@ program
   .description('Machine Memory: search your machine by memory, not filename')
   .version('0.1.0')
 
-program.command('scan').description('Scan configured roots').action(runScan)
+program
+  .command('scan')
+  .description('Scan configured roots')
+  .option('-r, --root <path>', 'add a scan root for this run', collect, [])
+  .action(runScan)
 
 program
   .command('find')
@@ -30,3 +34,7 @@ program.command('doctor').description('Check local setup').action(runDoctor)
 
 program.parse()
 
+function collect(value: string, previous: string[]): string[] {
+  previous.push(value)
+  return previous
+}
