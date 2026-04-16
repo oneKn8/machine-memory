@@ -22,6 +22,7 @@ Recommended implementation stack for V1:
 - SQLite
 - SQLite FTS5
 - system `tesseract` for OCR
+- optional `exiftool` for richer image metadata
 
 ## User Stories
 
@@ -47,6 +48,7 @@ Recommended implementation stack for V1:
 ```bash
 mm scan
 mm scan --root /path/to/other/workspace
+mm scan --root /path/to/screenshots --ocr-mode screenshots
 mm find "where is gitonsteroid"
 mm find "image from Colorado"
 mm find "pdf about quantization"
@@ -67,6 +69,7 @@ mm doctor
 
 - Crawl configured roots
 - Support per-run root overrides for nonstandard machine layouts
+- Support explicit OCR modes (`off`, `screenshots`, `all`)
 - Detect git repos
 - Extract repo remotes and metadata
 - Index common file metadata

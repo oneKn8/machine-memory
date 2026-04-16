@@ -138,3 +138,27 @@ Reason:
 - exact, fuzzy, OCR, and full-text search already solve a lot of pain
 - simpler retrieval is easier to debug and trust
 - semantic ranking can be added once the baseline UX is already strong
+
+## D-012: Default OCR to screenshots first
+
+Decision:
+
+- V1 should default OCR to `screenshots` mode instead of OCRing every image file
+
+Reason:
+
+- screenshot OCR is high value early
+- OCR on every image makes scans much slower
+- explicit OCR modes keep the product predictable and controllable
+
+## D-013: Use optional EXIF extraction when exiftool is available
+
+Decision:
+
+- image metadata extraction should opportunistically use `exiftool` when it exists, but not require it to function
+
+Reason:
+
+- EXIF-backed image recall is important for the long-term vision
+- optional enrichment keeps setup simple
+- the baseline product should still work even without extra metadata tooling

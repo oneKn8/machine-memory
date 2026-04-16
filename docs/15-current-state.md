@@ -43,6 +43,16 @@ The first version is a CLI-first local search tool for:
 
 It should help users recover things they know exist but cannot locate.
 
+Current implementation status:
+
+- the repo is initialized and buildable
+- local scanning, indexing, and `find`/`show`/`doctor` commands exist
+- repo metadata and text extraction are wired into SQLite + FTS5
+- screenshot and image metadata indexing exists
+- screenshot/image OCR exists through system `tesseract`
+- image EXIF enrichment is supported when `exiftool` is installed
+- OCR-backed search results can now explain that they matched OCR text instead of only path text
+
 ## Locked Early Decisions
 
 - Use TypeScript for implementation
@@ -50,6 +60,8 @@ It should help users recover things they know exist but cannot locate.
 - Use SQLite for metadata storage
 - Use SQLite FTS5 for local full-text retrieval
 - Use system `tesseract` for OCR first
+- Default OCR mode to `screenshots`
+- Use optional `exiftool` enrichment when available
 - Delay semantic retrieval until after the baseline search engine is useful
 - Keep the product local-first and privacy-first
 - Keep system-level collectors for later phases
@@ -107,4 +119,8 @@ Add later:
 
 ## Immediate Next Step
 
-Turn the documentation into an actual repository and start implementing the Phase 1 scanner and index.
+Keep tightening Phase 1 search quality:
+
+- improve ranking on mixed repo/file/image indexes
+- expand trust signals in `show`
+- improve scan ergonomics and OCR cost controls

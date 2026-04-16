@@ -3,6 +3,7 @@ import path from 'node:path'
 import fg from 'fast-glob'
 import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
+import type { OcrMode } from '../config/types.js'
 import { extractTextFromFileResult } from '../extractors/textExtractor.js'
 import { upsertTextBlob } from '../index/textBlobs.js'
 import { extractImageMetadata, isImageFile } from '../media/imageMetadata.js'
@@ -11,7 +12,16 @@ import { extractImageOcr } from '../ocr/imageOcr.js'
 const FILE_LIMIT = 5000
 const MAX_IMAGE_OCR_BYTES = 6 * 1024 * 1024
 
-export function scanFiles(db: Database.Database, roots: string[]): number {
+export type FileScanOptions = {
+  ocrMode?: OcrMode
+}
+
+export function scanFiles(
+  db: Database.Database,
+  roots: string[],
+  options: FileScanOptions = {},
+): number {
+  const ocrMode = options.ocrMode ?? 'screenshots'
   const now = new Date().toISOString()
   const insert = db.prepare(`
     INSERT INTO file_records (
@@ -95,7 +105,7 @@ export function scanFiles(db: Database.Database, roots: string[]): number {
           })
         }
 
-        if (imageMetadata?.isImage && shouldRunImageOcr(imageMetadata.raw, stat.size)) {
+        if (imageMetadata?.isImage && shouldRunImageOcr(imageMetadata.raw, stat.size, ocrMode)) {
           const imageOcr = extractImageOcr(filePath)
           if (imageOcr.success && imageOcr.content && imageOcr.extractorType) {
             upsertTextBlob(db, {
@@ -128,7 +138,12 @@ function stableId(value: string): string {
   return createHash('sha1').update(value).digest('hex')
 }
 
-function shouldRunImageOcr(metadata: Record<string, unknown>, sizeBytes: number): boolean {
-  if (metadata.isScreenshot === true) return true
+function shouldRunImageOcr(
+  metadata: Record<string, unknown>,
+  sizeBytes: number,
+  ocrMode: OcrMode,
+): boolean {
+  if (ocrMode === 'off') return false
+  if (ocrMode === 'screenshots') return metadata.isScreenshot === true
   return sizeBytes <= MAX_IMAGE_OCR_BYTES
 }

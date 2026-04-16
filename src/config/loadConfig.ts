@@ -1,8 +1,10 @@
 import fs from 'node:fs'
 import { getDefaultConfigPath } from './defaults.js'
+import type { OcrMode } from './types.js'
 
 export type MachineMemoryConfig = {
   roots?: string[]
+  ocrMode?: OcrMode
 }
 
 export function loadConfig(): MachineMemoryConfig {
@@ -19,4 +21,3 @@ export function loadConfig(): MachineMemoryConfig {
     return {}
   }
 }
-
