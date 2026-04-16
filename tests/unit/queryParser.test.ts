@@ -11,5 +11,24 @@ describe('parseQuery', () => {
     const parsed = parseQuery('show me the screenshot from yesterday')
     expect(parsed.sourceHints).toContain('screenshot')
   })
-})
 
+  it('extracts all supported source hints in canonical order', () => {
+    const parsed = parseQuery(' Repo IMAGE PDF screenshot download ')
+
+    expect(parsed.normalizedQuery).toBe('repo image pdf screenshot download')
+    expect(parsed.sourceHints).toEqual([
+      'repo',
+      'image',
+      'pdf',
+      'screenshot',
+      'download',
+    ])
+  })
+
+  it('returns an empty normalized query for whitespace-only input', () => {
+    const parsed = parseQuery('   ')
+
+    expect(parsed.normalizedQuery).toBe('')
+    expect(parsed.sourceHints).toEqual([])
+  })
+})

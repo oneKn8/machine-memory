@@ -3,6 +3,8 @@ import path from 'node:path'
 import fg from 'fast-glob'
 import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
+import { extractTextFromFile } from '../extractors/textExtractor.js'
+import { upsertTextBlob } from '../index/textBlobs.js'
 
 const FILE_LIMIT = 5000
 
@@ -35,7 +37,14 @@ export function scanFiles(db: Database.Database, roots: string[]): number {
         absolute: true,
         dot: false,
         followSymbolicLinks: false,
-        ignore: ['**/node_modules/**', '**/.git/**'],
+        suppressErrors: true,
+        ignore: [
+          '**/node_modules/**',
+          '**/.git/**',
+          '**/.pgdata/**',
+          '**/.cache/**',
+          '**/Library/**',
+        ],
       })
 
       for (const filePath of entries.slice(0, FILE_LIMIT)) {
@@ -54,6 +63,16 @@ export function scanFiles(db: Database.Database, roots: string[]): number {
           source_root: root,
           indexed_at: now,
         })
+
+        const extractedText = extractTextFromFile(filePath)
+        if (extractedText) {
+          upsertTextBlob(db, {
+            sourceId: stableId(filePath),
+            sourceType: 'file',
+            extractorType: 'text',
+            content: extractedText,
+          })
+        }
         count += 1
       }
     }
@@ -74,4 +93,3 @@ function safeStat(filePath: string): fs.Stats | null {
 function stableId(value: string): string {
   return createHash('sha1').update(value).digest('hex')
 }
-

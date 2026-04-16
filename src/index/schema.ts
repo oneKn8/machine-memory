@@ -32,6 +32,9 @@ CREATE TABLE IF NOT EXISTS text_blobs (
   created_at TEXT NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_text_blobs_source
+  ON text_blobs(source_id, source_type, extractor_type);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS text_blobs_fts USING fts5(
   source_id UNINDEXED,
   source_type UNINDEXED,
@@ -39,4 +42,3 @@ CREATE VIRTUAL TABLE IF NOT EXISTS text_blobs_fts USING fts5(
   content
 );
 `
-
