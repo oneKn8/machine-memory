@@ -1,5 +1,7 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 const TEXT_EXTENSIONS = new Set([
   '.md',
@@ -41,6 +43,10 @@ export function extractTextFromFile(filePath: string): string | null {
   const ext = path.extname(filePath).toLowerCase()
   const base = path.basename(filePath).toLowerCase()
 
+  if (ext === '.pdf') {
+    return extractTextFromPdf(filePath)
+  }
+
   if (!TEXT_EXTENSIONS.has(ext) && !isSpecialTextFile(base)) {
     return null
   }
@@ -63,6 +69,34 @@ export function extractTextFromFile(filePath: string): string | null {
     return content
   } catch {
     return null
+  }
+}
+
+function extractTextFromPdf(filePath: string): string | null {
+  const pdftotext = findBinary('pdftotext')
+  if (!pdftotext) {
+    return null
+  }
+
+  const outputPath = path.join(
+    os.tmpdir(),
+    `machine-memory-${process.pid}-${Date.now()}.txt`,
+  )
+
+  try {
+    execFileSync(pdftotext, [filePath, outputPath], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+    })
+    const content = fs.readFileSync(outputPath, 'utf8')
+    return content.trim() ? content : null
+  } catch {
+    return null
+  } finally {
+    try {
+      fs.unlinkSync(outputPath)
+    } catch {
+      // ignore cleanup failures
+    }
   }
 }
 
@@ -90,7 +124,9 @@ function summarizePackageJson(raw: string): string {
 
     const keywords = pkg.keywords
     if (Array.isArray(keywords) && keywords.length > 0) {
-      parts.push(`keywords: ${keywords.filter(v => typeof v === 'string').join(', ')}`)
+      parts.push(
+        `keywords: ${keywords.filter(v => typeof v === 'string').join(', ')}`,
+      )
     }
 
     return parts.length > 0 ? parts.join('\n') : raw
@@ -99,3 +135,13 @@ function summarizePackageJson(raw: string): string {
   }
 }
 
+function findBinary(name: string): string | null {
+  try {
+    return execFileSync('which', [name], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch {
+    return null
+  }
+}

@@ -22,6 +22,7 @@ export function runDoctor(): void {
   }
   console.log('')
   console.log(`tesseract: ${hasBinary('tesseract') ? 'found' : 'missing'}`)
+  console.log(`pdftotext: ${hasBinary('pdftotext') ? 'found' : 'missing'}`)
   console.log(`git: ${hasBinary('git') ? 'found' : 'missing'}`)
 }
 
