@@ -1,10 +1,10 @@
-import { execFileSync } from 'node:child_process'
 import {
   getDefaultConfigPath,
   getDefaultDatabasePath,
   getDefaultScanRoots,
 } from '../../config/defaults.js'
 import { loadConfig } from '../../config/loadConfig.js'
+import { hasBinary } from '../../system/binaries.js'
 
 export function runDoctor(): void {
   const config = loadConfig()
@@ -23,14 +23,6 @@ export function runDoctor(): void {
   console.log('')
   console.log(`tesseract: ${hasBinary('tesseract') ? 'found' : 'missing'}`)
   console.log(`pdftotext: ${hasBinary('pdftotext') ? 'found' : 'missing'}`)
+  console.log(`exiftool: ${hasBinary('exiftool') ? 'found' : 'missing (optional)'}`)
   console.log(`git: ${hasBinary('git') ? 'found' : 'missing'}`)
-}
-
-function hasBinary(name: string): boolean {
-  try {
-    execFileSync('which', [name], { stdio: 'ignore' })
-    return true
-  } catch {
-    return false
-  }
 }
