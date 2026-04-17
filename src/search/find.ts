@@ -2,6 +2,36 @@ import type Database from 'better-sqlite3'
 import type { SearchResult } from '../types.js'
 import { parseQuery } from './queryParser.js'
 
+const STOP_WORDS = new Set([
+  'a', 'an', 'the',
+  'of', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+  'and', 'or', 'but',
+  'about', 'with', 'for', 'to', 'in', 'on', 'at', 'by', 'from',
+  'my', 'your', 'our', 'his', 'her', 'its', 'their',
+  'this', 'that', 'these', 'those',
+  'do', 'does', 'did', 'have', 'has', 'had',
+  'what', 'where', 'when', 'why', 'how', 'who', 'whom',
+  'i', 'me', 'we', 'us', 'you', 'he', 'she', 'it', 'they', 'them',
+])
+
+function filterMeaningfulTokens(tokens: string[]): string[] {
+  const filtered = tokens.filter(token => !STOP_WORDS.has(token))
+  return filtered.length > 0 ? filtered : tokens
+}
+
+function softStem(token: string): string {
+  if (
+    token.length >= 4 &&
+    token.endsWith('s') &&
+    !token.endsWith('ss') &&
+    !token.endsWith('us') &&
+    !token.endsWith('is')
+  ) {
+    return token.slice(0, -1)
+  }
+  return token
+}
+
 type Row = {
   id: string
   path: string
@@ -25,6 +55,7 @@ type TextRow = {
   source_type: 'file' | 'repo'
   extractor_type: string
   content: string
+  strict?: boolean
 }
 
 export function findMatches(
@@ -33,21 +64,26 @@ export function findMatches(
 ): SearchResult[] {
   const parsed = parseQuery(rawQuery)
   if (!parsed.normalizedQuery) return []
-  const queryTokens = parsed.normalizedQuery.split(/\s+/).filter(Boolean)
+  const rawTokens = parsed.normalizedQuery.split(/\s+/).filter(Boolean)
+  const meaningfulTokens = filterMeaningfulTokens(rawTokens)
+  const stemmedTokens = dedupeStrings(meaningfulTokens.map(softStem))
 
-  const fileRows = db
-    .prepare(
-      buildFileSearchSql(queryTokens),
-    )
-    .all(...buildLikeParams(queryTokens)) as Row[]
+  const fileRows = dedupeRowsById([
+    ...(db
+      .prepare(buildFileNameSearchSql(stemmedTokens))
+      .all(...buildNameLikeParams(stemmedTokens)) as Row[]),
+    ...(db
+      .prepare(buildFilePathSearchSql(stemmedTokens))
+      .all(...buildNameLikeParams(stemmedTokens)) as Row[]),
+  ])
 
   const repoRows = db
     .prepare(
-      buildRepoSearchSql(queryTokens),
+      buildRepoSearchSql(stemmedTokens),
     )
-    .all(...buildRepoLikeParams(queryTokens)) as RepoRow[]
+    .all(...buildRepoLikeParams(stemmedTokens)) as RepoRow[]
 
-  const textRows = searchTextRows(db, queryTokens)
+  const textRows = searchTextRows(db, stemmedTokens)
   const fuzzyFileRows = findFuzzyFileRows(db, parsed.normalizedQuery)
   const fuzzyRepoRows = findFuzzyRepoRows(db, parsed.normalizedQuery)
 
@@ -55,8 +91,10 @@ export function findMatches(
 
   for (const row of fileRows) {
     const metadata = parseMetadata(row.metadata_json)
+    const nameMatchBonus = tokenNameMatchBonus(meaningfulTokens, row.name)
     const score =
       scoreStringMatch(parsed.normalizedQuery, `${row.name} ${row.path}`) +
+      nameMatchBonus +
       scoreSourceHints(parsed.sourceHints, metadata, row.extension, row.path) +
       scorePathQuality(row.path, 'file')
     results.set(row.id, {
@@ -90,13 +128,14 @@ export function findMatches(
   }
 
   for (const row of textRows) {
+    const strictBoost = row.strict ? Math.min(meaningfulTokens.length * 12, 70) : 0
     const existing = results.get(row.source_id)
     if (existing) {
       existing.whyMatched = mergeMatchReasons(
         existing.whyMatched,
         `Matched ${describeTextBlobType(row.extractor_type)}: ${row.content}`,
       )
-      existing.score += 35 + scoreBlobSourceHint(parsed.sourceHints, row.extractor_type)
+      existing.score += 35 + strictBoost + scoreBlobSourceHint(parsed.sourceHints, row.extractor_type)
       continue
     }
     const target = row.source_type === 'repo'
@@ -133,8 +172,8 @@ export function findMatches(
       whyMatched: `Matched ${describeTextBlobType(row.extractor_type)}: ${row.content}`,
       score:
         row.source_type === 'repo'
-          ? 135 + scoreBlobSourceHint(parsed.sourceHints, row.extractor_type) + scorePathQuality(target.path, 'repo')
-          : 125 + scoreBlobSourceHint(parsed.sourceHints, row.extractor_type) + scorePathQuality(target.path, 'file'),
+          ? 135 + strictBoost + scoreBlobSourceHint(parsed.sourceHints, row.extractor_type) + scorePathQuality(target.path, 'repo')
+          : 125 + strictBoost + scoreBlobSourceHint(parsed.sourceHints, row.extractor_type) + scorePathQuality(target.path, 'file'),
       lastModified: target.modified_at ?? undefined,
     })
   }
@@ -143,7 +182,7 @@ export function findMatches(
     if (results.has(row.id)) continue
 
     const metadata = parseMetadata(row.metadata_json)
-    const similarity = fuzzySimilarity(parsed.normalizedQuery, `${row.name} ${stripExtension(row.name)}`)
+    const similarity = bestFuzzyNameSimilarity(meaningfulTokens, parsed.normalizedQuery, row.name)
     if (similarity < 0.72) continue
 
     results.set(row.id, {
@@ -160,7 +199,7 @@ export function findMatches(
   for (const row of fuzzyRepoRows) {
     if (results.has(row.id)) continue
 
-    const similarity = fuzzySimilarity(parsed.normalizedQuery, row.repo_name)
+    const similarity = bestFuzzyNameSimilarity(meaningfulTokens, parsed.normalizedQuery, row.repo_name)
     if (similarity < 0.72) continue
 
     results.set(row.id, {
@@ -209,8 +248,11 @@ function scoreStringMatch(
     return baseScore + 40
   }
 
-  const tokens = normalizedQuery.split(/\s+/).filter(Boolean)
-  const tokenHits = tokens.filter(token => normalizedHaystack.includes(token)).length
+  const rawTokens = normalizedQuery.split(/\s+/).filter(Boolean)
+  const tokens = filterMeaningfulTokens(rawTokens)
+  const tokenHits = tokens.filter(
+    token => normalizedHaystack.includes(token) || normalizedHaystack.includes(softStem(token)),
+  ).length
   return baseScore + tokenHits * 5
 }
 
@@ -224,7 +266,7 @@ function searchTextRows(db: Database.Database, queryTokens: string[]): TextRow[]
     SELECT source_id, source_type, extractor_type, snippet(text_blobs_fts, 3, '[', ']', ' … ', 12) AS content
     FROM text_blobs_fts
     WHERE text_blobs_fts MATCH ?
-    LIMIT 15
+    LIMIT 30
     `,
   )
 
@@ -232,19 +274,31 @@ function searchTextRows(db: Database.Database, queryTokens: string[]): TextRow[]
     .map(escapeFtsToken)
     .filter(Boolean)
 
-  if (strictTokens.length > 0) {
-    const strictRows = queryRows.all(toStrictFtsQuery(strictTokens)) as TextRow[]
-    if (strictRows.length > 0) {
-      return strictRows
+  const seen = new Set<string>()
+  const combined: TextRow[] = []
+
+  if (strictTokens.length > 1) {
+    for (const row of queryRows.all(toStrictFtsQuery(strictTokens)) as TextRow[]) {
+      const key = `${row.source_type}:${row.source_id}:${row.extractor_type}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      combined.push({ ...row, strict: true })
     }
   }
 
-  return queryRows.all(toFtsQuery(queryTokens.join(' '))) as TextRow[]
+  for (const row of queryRows.all(toFtsQuery(queryTokens.join(' '))) as TextRow[]) {
+    const key = `${row.source_type}:${row.source_id}:${row.extractor_type}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    combined.push({ ...row, strict: false })
+  }
+
+  return combined
 }
 
-function buildFileSearchSql(queryTokens: string[]): string {
+function buildFileNameSearchSql(queryTokens: string[]): string {
   const tokenClauses = queryTokens
-    .map(() => '(lower(name) LIKE ? OR lower(path) LIKE ?)')
+    .map(() => 'lower(name) LIKE ?')
     .join(' OR ')
 
   return `
@@ -252,8 +306,33 @@ function buildFileSearchSql(queryTokens: string[]): string {
     FROM file_records
     WHERE ${tokenClauses}
     ORDER BY modified_at DESC
-    LIMIT 25
+    LIMIT 150
   `
+}
+
+function buildFilePathSearchSql(queryTokens: string[]): string {
+  const tokenClauses = queryTokens
+    .map(() => 'lower(path) LIKE ?')
+    .join(' OR ')
+
+  return `
+    SELECT id, path, name, extension, mime_type, metadata_json, modified_at
+    FROM file_records
+    WHERE ${tokenClauses}
+    ORDER BY modified_at DESC
+    LIMIT 30
+  `
+}
+
+function dedupeRowsById(rows: Row[]): Row[] {
+  const seen = new Set<string>()
+  const out: Row[] = []
+  for (const row of rows) {
+    if (seen.has(row.id)) continue
+    seen.add(row.id)
+    out.push(row)
+  }
+  return out
 }
 
 function buildRepoSearchSql(queryTokens: string[]): string {
@@ -270,11 +349,44 @@ function buildRepoSearchSql(queryTokens: string[]): string {
   `
 }
 
-function buildLikeParams(queryTokens: string[]): string[] {
-  return queryTokens.flatMap(token => {
-    const pattern = `%${token}%`
-    return [pattern, pattern]
-  })
+function buildNameLikeParams(queryTokens: string[]): string[] {
+  return queryTokens.map(token => `%${token}%`)
+}
+
+function tokenNameMatchBonus(
+  meaningfulTokens: string[],
+  name: string,
+): number {
+  const haystack = name.toLowerCase()
+  let bestBonus = 0
+
+  for (const token of meaningfulTokens) {
+    if (token.length < 2) continue
+    const candidates = new Set<string>([token, softStem(token)])
+
+    for (const candidate of candidates) {
+      if (candidate.length < 2) continue
+      if (isWordBoundaryMatch(haystack, candidate)) {
+        bestBonus = Math.max(bestBonus, 40)
+      } else if (haystack.includes(candidate)) {
+        bestBonus = Math.max(bestBonus, 15)
+      }
+    }
+  }
+
+  return bestBonus
+}
+
+function isWordBoundaryMatch(haystack: string, token: string): boolean {
+  const pattern = new RegExp(
+    `(?:^|[^a-z0-9])${escapeRegex(token)}(?:$|[^a-z0-9])`,
+    'i',
+  )
+  return pattern.test(haystack)
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')
 }
 
 function buildRepoLikeParams(queryTokens: string[]): string[] {
@@ -459,6 +571,46 @@ function findFuzzyRepoRows(db: Database.Database, normalizedQuery: string): Repo
 
 function stripExtension(name: string): string {
   return name.replace(/\.[^.]+$/u, '')
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values)]
+}
+
+function bestFuzzyNameSimilarity(
+  meaningfulTokens: string[],
+  fullQuery: string,
+  candidateName: string,
+): number {
+  const nameTokens = dedupeStrings(
+    normalizeSeparators(candidateName.toLowerCase())
+      .split(/\s+/)
+      .filter(Boolean),
+  )
+  const nameBase = stripExtension(candidateName).toLowerCase()
+  const normalizedCandidate = normalizeSeparators(candidateName.toLowerCase())
+
+  let best = 0
+
+  if (meaningfulTokens.length <= 1) {
+    best = Math.max(
+      best,
+      fuzzySimilarity(fullQuery, candidateName),
+      fuzzySimilarity(fullQuery, nameBase),
+      fuzzySimilarity(fullQuery, normalizedCandidate),
+    )
+  }
+
+  for (const queryToken of meaningfulTokens) {
+    if (queryToken.length < 3) continue
+    for (const nameToken of nameTokens) {
+      if (nameToken.length < 3) continue
+      const similarity = fuzzySimilarity(queryToken, nameToken)
+      if (similarity > best) best = similarity
+    }
+  }
+
+  return best
 }
 
 function fuzzySimilarity(left: string, right: string): number {

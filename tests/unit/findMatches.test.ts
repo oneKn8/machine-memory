@@ -183,6 +183,78 @@ describe('findMatches', () => {
     expect(results[0]?.whyMatched).toContain('similar repo name')
   })
 
+  it('surfaces stats-related files for a vague natural-language query over unrelated recent repos', () => {
+    const db = openDatabase()
+
+    db.prepare(
+      `
+      INSERT INTO file_records (
+        id, path, name, extension, mime_type, modified_at, source_root, metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'stat-pdf',
+      '/home/oneknight/Downloads/documents/STAT HW 2 QUESTIONS SET.pdf',
+      'STAT HW 2 QUESTIONS SET.pdf',
+      'pdf',
+      null,
+      '2026-02-01T01:00:00.000Z',
+      '/home/oneknight/Downloads',
+      '{}',
+    )
+
+    for (const repoName of ['machine-memory', 'santo-portfolio', 'profgraph', 'autoform']) {
+      db.prepare(
+        `
+        INSERT INTO repo_records (
+          id, root_path, repo_name, current_branch, remote_url, last_commit_at, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `,
+      ).run(
+        `repo-${repoName}`,
+        `/home/oneknight/projects/${repoName}`,
+        repoName,
+        'main',
+        null,
+        '2026-04-16T01:00:00.000Z',
+        '{}',
+      )
+    }
+
+    const results = findMatches(db, 'a book about stats')
+    db.close()
+
+    const statIndex = results.findIndex(result => result.resultId === 'stat-pdf')
+    expect(statIndex).toBeGreaterThanOrEqual(0)
+    expect(statIndex).toBeLessThan(3)
+  })
+
+  it('matches plural-s tokens against singular filenames via soft stemming', () => {
+    const db = openDatabase()
+
+    db.prepare(
+      `
+      INSERT INTO file_records (
+        id, path, name, extension, mime_type, modified_at, source_root, metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'stat-file',
+      '/home/oneknight/Downloads/stat-notes.md',
+      'stat-notes.md',
+      'md',
+      null,
+      '2026-02-01T01:00:00.000Z',
+      '/home/oneknight/Downloads',
+      '{}',
+    )
+
+    const results = findMatches(db, 'stats')
+    db.close()
+
+    expect(results.some(result => result.resultId === 'stat-file')).toBe(true)
+  })
+
   it('prefers metadata-backed image hits over generic file-name noise for image queries', () => {
     const db = openDatabase()
     db.prepare(
