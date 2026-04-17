@@ -147,8 +147,22 @@ Phase 1 was reopened after real-machine testing revealed three gaps that the ori
 
 After rescanning `~/Downloads`, `~/zCoursework`, and `~/Desktop` with the fix in place:
 
-- PDFs with indexed text: **75 of 90 total** (was 2 of 88). The 15 remaining unextracted PDFs are all under `~/projects/**`, which could not be rescanned in this pass due to a separate performance issue captured in [20-phase-1-followups.md](20-phase-1-followups.md) as F-007.
-- DOCX files with indexed text: **11 of 14 total** (was 0 of 14). The 3 remaining DOCX files are also under `~/projects/**`.
+- PDFs with indexed text: **75 of 90 total** (was 2 of 88). The 15 remaining unextracted PDFs were all under `~/projects/**`, which could not be rescanned at the time due to the F-007 performance issue.
+- DOCX files with indexed text: **11 of 14 total** (was 0 of 14). The 3 remaining DOCX files were also under `~/projects/**`.
+
+### F-007 Resolved And Re-Validated Against `~/projects`
+
+Once F-007 was rooted out (the scanner was wrapping the whole scan in a single 360 MB WAL-growing transaction, not actually hanging), the scanner was refactored to commit per batch and stream progress to stderr. After partial re-scanning `~/projects` with the fix:
+
+- PDFs with indexed text: **91 of 93 total**
+- DOCX files with indexed text: **13 of 14 total**
+
+The remaining 3 files are all legitimate content limitations, not extractor bugs:
+
+- `~/Pictures/project-assets/lumentra1.pdf` and `lumentra1 (1).pdf` — image-only PDFs; `pdftotext` correctly returns no text.
+- `~/projects/infra/Astra/test-resume.docx` — 56 bytes of plain text with a `.docx` extension; not a real DOCX.
+
+Effective extractable-content coverage is 100%.
 
 ### Validation Queries (Phase 1 Reopen)
 

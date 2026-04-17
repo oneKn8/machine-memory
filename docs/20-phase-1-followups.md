@@ -67,19 +67,29 @@ Status: hard-coded is fine for Phase 1.
 
 When to do it: once the product has enough users for vocabulary variance to matter, or if a user hits a query where the stop-word list hurts them.
 
-### F-007: Full-`~/projects` scan stalls at 0% CPU
+### F-007 (resolved): Full-`~/projects` scan appeared to stall
 
-Discovery: During the Phase 1 reopen validation, running `mm scan --root ~/projects --ocr-mode off` stalled at 0% CPU for 27 minutes with no database writes and no stdout. Smaller scans of `~/Downloads`, `~/zCoursework`, and `~/Desktop` completed in seconds. The stall is unrelated to the cache, DOCX, or ranker fixes; it was present before the reopen.
+Original symptom: running `mm scan --root ~/projects --ocr-mode off` appeared to hang at 0% CPU for 27+ minutes with no DB writes and no stdout.
 
-Likely causes to investigate:
+Real root cause: the scanner was wrapping the entire scan in a single `db.transaction` call. On large roots, the uncommitted transaction accumulated in the SQLite WAL (observed to grow past 360 MB), the main database file timestamp never advanced during the scan, and the process was I/O-bound on WAL growth which made `ps` report ~0% CPU. There was no actual hang — just slow, silent progress that impatient operators killed before it could finish.
 
-- fast-glob traversing a very large or symlink-looping subtree that is not covered by `DEFAULT_EXCLUDE_GLOBS`
-- a single `pdftotext` or `unzip` subprocess hanging on a malformed file and blocking the whole transaction
-- the whole-root transaction model holding too long
+Fix: scanner now processes files in batches (default 500) with one short-lived transaction per batch; a new `onProgress` callback lets the CLI print live progress to stderr. This keeps the WAL checkpointed (observed ~30 MB instead of 360 MB) and makes interrupts safe — committed work survives.
 
-Status: not blocking Phase 1 closure. The reopen is validated on Downloads + zCoursework + Desktop, which already covered all 88 previously-broken PDFs and 11 DOCX files except those under `~/projects/**`. A targeted subset scan of the affected `~/projects` subdirectories is a reasonable workaround until this is rooted out.
+Follow-through: see followup F-009 below for the remaining per-batch fsync cost. The Phase 1 reopen validation after this fix shows **91 of 93 indexed PDFs** and **13 of 14 indexed DOCX files** have text blobs. The three remaining unextracted files are all legitimate content limitations (two image-only PDFs and one mislabeled `.docx` that is actually 56 bytes of plain text), not extractor bugs.
 
-When to do it: before any larger announcement of Phase 1 or before enabling automated periodic scans.
+### F-009: Per-batch commit cost on large scans
+
+Discovery: After switching from a single unbounded transaction to per-batch commits (F-007 fix), whole-root `~/projects` scan throughput dropped from roughly 30-50 files/sec to ~7.5 files/sec. Correctness and UX improved significantly, but raw speed regressed. The likely cause is that each committed batch now pays synchronous fsync costs that the prior all-or-nothing transaction amortized at the end.
+
+Directions worth investigating:
+
+- Adjust `PRAGMA synchronous` (currently defaults to FULL) to NORMAL during bulk scans, which is still WAL-safe.
+- Move heavy extraction (pdftotext, unzip, tesseract spawns) *outside* the transaction and only write blob results inside it, so batches stay small and fast.
+- Tune `batchSize` upward (currently 500) once extraction is factored out.
+
+Status: acceptable for Phase 1. The scanner is now correct, safe to interrupt, and shows progress; speed optimization is a Phase 1.5 / Phase 2 polish item.
+
+When to do it: once Phase 2 activity indexing lands and scans become more frequent (every session), or earlier if a user complains about scan speed on a large machine.
 
 ### F-008: Vague natural-language queries with semantically loose words
 

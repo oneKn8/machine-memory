@@ -60,10 +60,11 @@ Current implementation status:
 - DOCX body extraction is supported through system `unzip`
 - the incremental scan cache re-runs text extraction when a file's expected text blob is missing, so files indexed before an extractor existed are healed automatically on rescan
 - ranker filters stop-words, soft-stems plural tokens, rewards word-boundary name matches, and uses per-token fuzzy similarity on longer queries while preserving whole-query fuzzy recall for single-word typo cases
+- scans commit in batches (default 500 files) instead of holding a single transaction across the whole root, with live progress on stderr and a bounded WAL; an `MM_TRACE=1` env flag emits per-batch and per-extraction trace lines for future performance work
 
 Phase 1 status:
 
-- complete, reopened on 2026-04-17 to close PDF/DOCX extraction and vague-query ranking gaps, re-validated against the real machine index (see `docs/19-phase-1-validation.md` "Phase 1 Reopen")
+- complete, reopened on 2026-04-17 to close PDF/DOCX extraction, vague-query ranking, and scan-stall gaps, re-validated against the real machine index (see `docs/19-phase-1-validation.md` "Phase 1 Reopen" and "F-007 Resolved" sections)
 
 ## Locked Early Decisions
 
