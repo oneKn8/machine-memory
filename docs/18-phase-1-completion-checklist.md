@@ -60,3 +60,12 @@ Phase 1 is done when the project can reliably answer:
 - "Where is that file?"
 
 and do so quickly, with grounded explanations, without rescanning everything every time.
+
+## Reopen Notes (2026-04-17)
+
+The items above were initially checked off against a 3-file controlled validation root. Testing on the real machine index surfaced three real gaps — two of which made previously-checked items untrue in practice:
+
+- "Repo recall, PDF recall, screenshot OCR recall, and image recall all work on actual machine content" was checked, but only 2 of 88 indexed PDFs and 0 of 14 indexed DOCX files actually had extracted text. Root cause: the incremental scan cache skipped previously-seen files without verifying that extraction had produced a blob. See D-017 and [20-phase-1-followups.md](20-phase-1-followups.md).
+- "Keep fuzzy matches useful without letting them dominate obvious exact results" was checked, but natural-language queries with stop words and plural tokens were drowning file matches under recent repos.
+
+Both items have now been fixed and re-validated against the real index. PDF coverage is 75 of 90 indexed PDFs and DOCX coverage is 11 of 14 (the gap is bounded to files under `~/projects/**` which could not be rescanned this pass due to followup F-007). See `docs/19-phase-1-validation.md` for the full Phase 1 Reopen validation record.

@@ -187,6 +187,24 @@ Reason:
 - repo recall feels broken if `gitinsteroid` cannot find `gitonsteroid`
 - lightweight fuzzy matching is enough to prove the product value before semantic retrieval exists
 
+## D-017: Separate file-record fingerprint from extraction state
+
+Decision:
+
+- the incremental scan cache must not treat "file record has been seen" as equivalent to "file has been fully extracted"
+
+Reason:
+
+- the original Phase 1 cache skipped a file entirely when its path/size/mtime fingerprint matched the last scan
+- this caused files indexed before PDF extraction was wired to permanently stay unindexed for text recall, even on rescans
+- a rescan of the real machine found that only 2 of 88 PDFs and 0 of 14 DOCX files had extracted text, despite the relevant extractors being available
+- a cache that reports success without ever producing the artifact is a fake-completion pattern that contradicts the product's trust promise
+
+How this is applied:
+
+- scanner rechecks the expected text extractor type for a file whenever its fingerprint matches, and re-runs extraction when the expected text blob is missing
+- this keeps the incremental cache cheap for files that are already fully extracted, while automatically healing partial or stale extraction state
+
 ## D-016: Validate with real local content, not only mocked fixtures
 
 Decision:

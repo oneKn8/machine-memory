@@ -57,10 +57,13 @@ Current implementation status:
 - typo-tolerant repo recall and mixed-source ranking now demote noisy dependency/temp paths
 - `show` surfaces mime, source root, metadata, and indexed provenance snippets
 - real-world validation has been run against an actual local repo plus actual local screenshot, PDF, and image content
+- DOCX body extraction is supported through system `unzip`
+- the incremental scan cache re-runs text extraction when a file's expected text blob is missing, so files indexed before an extractor existed are healed automatically on rescan
+- ranker filters stop-words, soft-stems plural tokens, rewards word-boundary name matches, and uses per-token fuzzy similarity on longer queries while preserving whole-query fuzzy recall for single-word typo cases
 
 Phase 1 status:
 
-- complete
+- complete, reopened on 2026-04-17 to close PDF/DOCX extraction and vague-query ranking gaps, re-validated against the real machine index (see `docs/19-phase-1-validation.md` "Phase 1 Reopen")
 
 ## Locked Early Decisions
 
