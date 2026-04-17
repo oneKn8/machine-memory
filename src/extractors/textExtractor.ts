@@ -123,6 +123,7 @@ export type TextExtractorKind =
   | 'readme'
   | 'package_manifest'
   | 'pdf'
+  | 'docx'
   | 'unsupported'
 
 export type PdfExtractionStrategy = 'pdftotext' | 'mutool' | 'raw_strings' | 'none'
@@ -155,6 +156,7 @@ export function detectTextExtractorKind(filePath: string): TextExtractorKind {
   const base = path.basename(filePath).toLowerCase()
 
   if (ext === '.pdf') return 'pdf'
+  if (ext === '.docx') return 'docx'
   if (PACKAGE_MANIFEST_FILES.has(base)) return 'package_manifest'
   if (isReadmeFile(base)) return 'readme'
   if (MARKDOWN_EXTENSIONS.has(ext)) return 'markdown'
@@ -191,6 +193,10 @@ export function extractTextFromFileResult(
 
   if (kind === 'pdf') {
     return extractPdfText(filePath, options)
+  }
+
+  if (kind === 'docx') {
+    return extractDocxText(filePath, options)
   }
 
   return extractTextDocument(filePath, kind, options)
@@ -381,6 +387,120 @@ function extractPdfText(
       },
     )
   }
+}
+
+function extractDocxText(
+  filePath: string,
+  options: TextExtractionOptions,
+): TextExtractionResult {
+  const warnings: string[] = []
+  const maxCharacters = normalizeLimit(options.maxCharacters, DEFAULT_MAX_CHARACTERS)
+
+  const result = spawnSync('unzip', ['-p', filePath, 'word/document.xml'], {
+    encoding: 'buffer',
+    maxBuffer: PDF_COMMAND_BUFFER_BYTES,
+  })
+
+  if (result.error) {
+    const error = result.error as NodeJS.ErrnoException
+    if (error.code === 'ENOENT') {
+      return failureResult(
+        filePath,
+        'docx',
+        'application/docx',
+        'unzip binary was not found on PATH; cannot read DOCX',
+        warnings,
+        { truncated: false },
+      )
+    }
+    return failureResult(
+      filePath,
+      'docx',
+      'application/docx',
+      `unzip failed: ${error.message}`,
+      warnings,
+      { truncated: false },
+    )
+  }
+
+  if (result.status !== 0) {
+    const stderr =
+      result.stderr != null ? result.stderr.toString('utf8').trim() : ''
+    return failureResult(
+      filePath,
+      'docx',
+      'application/docx',
+      stderr
+        ? `unzip exited with ${result.status}: ${stderr}`
+        : `unzip exited with ${result.status}`,
+      warnings,
+      { truncated: false },
+    )
+  }
+
+  const xml = result.stdout != null ? result.stdout.toString('utf8') : ''
+  if (!xml.trim()) {
+    return failureResult(
+      filePath,
+      'docx',
+      'application/docx',
+      'DOCX document body was empty or missing',
+      warnings,
+      { truncated: false },
+    )
+  }
+
+  const text = docxXmlToText(xml)
+  if (!text.trim()) {
+    return failureResult(
+      filePath,
+      'docx',
+      'application/docx',
+      'Could not recover readable text from the DOCX',
+      warnings,
+      { truncated: false },
+    )
+  }
+
+  const limited = limitContent(text, maxCharacters)
+  if (limited.truncated) {
+    warnings.push(`Trimmed extracted DOCX text to ${maxCharacters} characters`)
+  }
+
+  return {
+    filePath,
+    kind: 'docx',
+    extractorType: 'application/docx',
+    success: true,
+    content: limited.content,
+    warnings,
+    metadata: {
+      truncated: limited.truncated,
+    },
+  }
+}
+
+function docxXmlToText(xml: string): string {
+  return xml
+    .replace(/<w:p(?:\s[^>]*)?>/g, '\n')
+    .replace(/<\/w:p>/g, '\n')
+    .replace(/<w:tab\b[^>]*\/?>/g, '\t')
+    .replace(/<w:br\b[^>]*\/?>/g, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&#(\d+);/g, (_, code: string) =>
+      String.fromCharCode(Number.parseInt(code, 10)),
+    )
+    .replace(/&#x([0-9a-f]+);/gi, (_, code: string) =>
+      String.fromCharCode(Number.parseInt(code, 16)),
+    )
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }
 
 function buildManifestText(filePath: string, raw: string): string {
@@ -907,6 +1027,8 @@ function extractorTypeForKind(
       return 'text/package-manifest'
     case 'pdf':
       return 'application/pdf'
+    case 'docx':
+      return 'application/docx'
     case 'plain_text':
       return 'text/plain'
   }

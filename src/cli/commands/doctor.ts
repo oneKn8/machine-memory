@@ -23,6 +23,7 @@ export function runDoctor(): void {
   console.log('')
   console.log(`tesseract: ${hasBinary('tesseract') ? 'found' : 'missing'}`)
   console.log(`pdftotext: ${hasBinary('pdftotext') ? 'found' : 'missing'}`)
+  console.log(`unzip: ${hasBinary('unzip') ? 'found' : 'missing (needed for DOCX)'}`)
   console.log(`exiftool: ${hasBinary('exiftool') ? 'found' : 'missing (optional)'}`)
   console.log(`git: ${hasBinary('git') ? 'found' : 'missing'}`)
 }

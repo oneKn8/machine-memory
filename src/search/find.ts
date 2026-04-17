@@ -369,6 +369,8 @@ function describeTextBlobType(extractorType: string): string {
       return 'screenshot OCR text'
     case 'application/pdf':
       return 'PDF text'
+    case 'application/docx':
+      return 'DOCX text'
     case 'text/package-manifest':
       return 'package manifest text'
     case 'repo_summary':
