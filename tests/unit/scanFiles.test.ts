@@ -9,9 +9,13 @@ const mockState = vi.hoisted(() => ({
   extractTextFromFileResult: vi.fn(),
 }))
 
-vi.mock('../../src/extractors/textExtractor.js', () => ({
-  extractTextFromFileResult: mockState.extractTextFromFileResult,
-}))
+vi.mock('../../src/extractors/textExtractor.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/extractors/textExtractor.js')>()
+  return {
+    ...actual,
+    extractTextFromFileResult: mockState.extractTextFromFileResult,
+  }
+})
 
 vi.mock('../../src/media/imageMetadata.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/media/imageMetadata.js')>()
@@ -165,6 +169,80 @@ describe('scanFiles OCR modes', () => {
         content: 'Login dialog with Colorado trip notes',
       },
     ])
+  })
+
+  it('re-extracts text when the fingerprint matches but the expected text blob is missing', () => {
+    const db = openDatabase(dbPath)
+
+    const textFilePath = path.join(tempRoot, 'docs', 'notes.md')
+    fs.mkdirSync(path.dirname(textFilePath), { recursive: true })
+    fs.writeFileSync(textFilePath, '# Notes\n\nFirst body.')
+
+    mockState.extractTextFromFileResult.mockImplementation((filePath: string) => {
+      if (filePath === textFilePath) {
+        return {
+          success: false,
+          content: null,
+          extractorType: 'text/markdown',
+          reason: 'simulated first-pass failure',
+        }
+      }
+      return {
+        success: false,
+        content: null,
+        extractorType: null,
+        reason: 'not text',
+      }
+    })
+
+    scanFiles(db, [tempRoot], { ocrMode: 'off' })
+
+    const blobsAfterFirst = db
+      .prepare(
+        `
+        SELECT extractor_type
+        FROM text_blobs
+        WHERE extractor_type = 'text/markdown'
+        `,
+      )
+      .all() as Array<{ extractor_type: string }>
+    expect(blobsAfterFirst).toHaveLength(0)
+
+    mockState.extractTextFromFileResult.mockReset()
+    mockState.extractTextFromFileResult.mockImplementation((filePath: string) => {
+      if (filePath === textFilePath) {
+        return {
+          success: true,
+          content: '# Notes\n\nFirst body.',
+          extractorType: 'text/markdown',
+        }
+      }
+      return {
+        success: false,
+        content: null,
+        extractorType: null,
+        reason: 'not text',
+      }
+    })
+
+    const second = scanFiles(db, [tempRoot], { ocrMode: 'off' })
+
+    const blobsAfterSecond = db
+      .prepare(
+        `
+        SELECT content
+        FROM text_blobs
+        WHERE extractor_type = 'text/markdown'
+        `,
+      )
+      .all() as Array<{ content: string }>
+
+    db.close()
+
+    expect(second.reusedFiles).toBeGreaterThan(0)
+    expect(second.textExtractions).toBe(1)
+    expect(blobsAfterSecond).toHaveLength(1)
+    expect(blobsAfterSecond[0]?.content).toBe('# Notes\n\nFirst body.')
   })
 
   it('reuses unchanged files on a second scan instead of rerunning extraction', () => {

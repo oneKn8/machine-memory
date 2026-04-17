@@ -8,6 +8,26 @@ export type TextBlobInput = {
   content: string
 }
 
+export function hasTextBlob(
+  db: Database.Database,
+  sourceId: string,
+  sourceType: 'file' | 'repo',
+  extractorType: string,
+): boolean {
+  const row = db
+    .prepare(
+      `
+      SELECT 1
+      FROM text_blobs
+      WHERE source_id = ? AND source_type = ? AND extractor_type = ?
+      LIMIT 1
+      `,
+    )
+    .get(sourceId, sourceType, extractorType) as { 1: number } | undefined
+
+  return row !== undefined
+}
+
 export function upsertTextBlob(
   db: Database.Database,
   input: TextBlobInput,

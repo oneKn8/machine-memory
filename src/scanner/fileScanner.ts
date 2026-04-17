@@ -5,8 +5,8 @@ import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import type { OcrMode } from '../config/types.js'
 import { DEFAULT_EXCLUDE_GLOBS } from '../config/defaults.js'
-import { extractTextFromFileResult } from '../extractors/textExtractor.js'
-import { upsertTextBlob } from '../index/textBlobs.js'
+import { expectedTextExtractorType, extractTextFromFileResult } from '../extractors/textExtractor.js'
+import { hasTextBlob, upsertTextBlob } from '../index/textBlobs.js'
 import { extractImageMetadata, isImageFile } from '../media/imageMetadata.js'
 import { extractImageOcr } from '../ocr/imageOcr.js'
 
@@ -86,6 +86,23 @@ export function scanFiles(
 
         if (existingMetadata.scanFingerprint === scanFingerprint) {
           summary.reusedFiles += 1
+          const expectedType = expectedTextExtractorType(filePath)
+          if (expectedType && !hasTextBlob(db, id, 'file', expectedType)) {
+            const textExtraction = extractTextFromFileResult(filePath)
+            if (
+              textExtraction.success &&
+              textExtraction.content &&
+              textExtraction.extractorType
+            ) {
+              upsertTextBlob(db, {
+                sourceId: id,
+                sourceType: 'file',
+                extractorType: textExtraction.extractorType,
+                content: textExtraction.content,
+              })
+              summary.textExtractions += 1
+            }
+          }
           continue
         }
 

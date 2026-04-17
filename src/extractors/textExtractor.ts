@@ -165,6 +165,12 @@ export function detectTextExtractorKind(filePath: string): TextExtractorKind {
   return 'unsupported'
 }
 
+export function expectedTextExtractorType(filePath: string): string | null {
+  const kind = detectTextExtractorKind(filePath)
+  if (kind === 'unsupported') return null
+  return extractorTypeForKind(kind)
+}
+
 export function extractTextFromFile(
   filePath: string,
   options: TextExtractionOptions = {},
