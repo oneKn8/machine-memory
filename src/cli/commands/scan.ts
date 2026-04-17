@@ -19,7 +19,22 @@ export function runScan(options: ScanOptions = {}): void {
   const db = openDatabase()
 
   const repoCount = scanRepos(db, roots)
-  const fileSummary = scanFiles(db, roots, { ocrMode, excludeGlobs })
+
+  let lastProgressRoot: string | null = null
+  const fileSummary = scanFiles(db, roots, {
+    ocrMode,
+    excludeGlobs,
+    onProgress: ({ root, processed, total }) => {
+      if (root !== lastProgressRoot) {
+        if (lastProgressRoot !== null) process.stderr.write('\n')
+        lastProgressRoot = root
+      }
+      process.stderr.write(
+        `\rScanning ${root}: ${processed}/${total} files`,
+      )
+      if (processed === total) process.stderr.write('\n')
+    },
+  })
 
   db.close()
 

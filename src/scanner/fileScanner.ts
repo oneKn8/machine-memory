@@ -11,10 +11,26 @@ import { extractImageMetadata, isImageFile } from '../media/imageMetadata.js'
 import { extractImageOcr } from '../ocr/imageOcr.js'
 
 const MAX_IMAGE_OCR_BYTES = 6 * 1024 * 1024
+const DEFAULT_BATCH_SIZE = 500
+
+const TRACE = process.env.MM_TRACE === '1'
+function trace(message: string): void {
+  if (TRACE) {
+    process.stderr.write(`[mm-trace ${new Date().toISOString()}] ${message}\n`)
+  }
+}
 
 export type FileScanOptions = {
   ocrMode?: OcrMode
   excludeGlobs?: string[]
+  batchSize?: number
+  onProgress?: (progress: FileScanProgress) => void
+}
+
+export type FileScanProgress = {
+  root: string
+  processed: number
+  total: number
 }
 
 export type FileScanSummary = {
@@ -32,6 +48,9 @@ export function scanFiles(
 ): FileScanSummary {
   const ocrMode = options.ocrMode ?? 'screenshots'
   const excludeGlobs = [...DEFAULT_EXCLUDE_GLOBS, ...(options.excludeGlobs ?? [])]
+  const batchSize = Math.max(1, options.batchSize ?? DEFAULT_BATCH_SIZE)
+  const onProgress = options.onProgress
+
   const insert = db.prepare(`
     INSERT INTO file_records (
       id, path, name, extension, mime_type, size_bytes, created_at, modified_at, accessed_at, source_root, metadata_json
@@ -62,75 +81,27 @@ export function scanFiles(
     metadataExtractions: 0,
     ocrExtractions: 0,
   }
-  const tx = db.transaction(() => {
-    for (const root of roots) {
-      if (!fs.existsSync(root)) continue
 
-      const entries = fg.sync(['**/*'], {
-        cwd: root,
-        onlyFiles: true,
-        absolute: true,
-        dot: false,
-        followSymbolicLinks: false,
-        suppressErrors: true,
-        ignore: excludeGlobs,
-      })
+  const processFile = (filePath: string, root: string): void => {
+    const stat = safeStat(filePath)
+    if (!stat) return
+    const id = stableId(filePath)
+    const scanFingerprint = buildScanFingerprint(filePath, stat)
+    const existingRow = findExisting.get(filePath) as { metadata_json: string | null } | undefined
+    const existingMetadata = parseMetadata(existingRow?.metadata_json ?? null)
 
-      for (const filePath of entries) {
-        const stat = safeStat(filePath)
-        if (!stat) continue
-        const id = stableId(filePath)
-        const scanFingerprint = buildScanFingerprint(filePath, stat)
-        const existingRow = findExisting.get(filePath) as { metadata_json: string | null } | undefined
-        const existingMetadata = parseMetadata(existingRow?.metadata_json ?? null)
-
-        if (existingMetadata.scanFingerprint === scanFingerprint) {
-          summary.reusedFiles += 1
-          const expectedType = expectedTextExtractorType(filePath)
-          if (expectedType && !hasTextBlob(db, id, 'file', expectedType)) {
-            const textExtraction = extractTextFromFileResult(filePath)
-            if (
-              textExtraction.success &&
-              textExtraction.content &&
-              textExtraction.extractorType
-            ) {
-              upsertTextBlob(db, {
-                sourceId: id,
-                sourceType: 'file',
-                extractorType: textExtraction.extractorType,
-                content: textExtraction.content,
-              })
-              summary.textExtractions += 1
-            }
-          }
-          continue
-        }
-
-        const imageMetadata = isImageFile(filePath) ? extractImageMetadata(filePath) : null
-        const metadata = mergeMetadata(existingMetadata, imageMetadata?.raw ?? {}, {
-          scanFingerprint,
-          lastIndexedAt: new Date().toISOString(),
-          isImage: imageMetadata?.isImage ?? false,
-        })
-        const metadataJson = JSON.stringify(metadata)
-
-        insert.run({
-          id,
-          path: filePath,
-          name: path.basename(filePath),
-          extension: path.extname(filePath).replace('.', ''),
-          mime_type: imageMetadata?.mimeType ?? null,
-          size_bytes: stat.size,
-          created_at: new Date(stat.birthtimeMs || Date.now()).toISOString(),
-          modified_at: new Date(stat.mtimeMs || Date.now()).toISOString(),
-          accessed_at: new Date(stat.atimeMs || Date.now()).toISOString(),
-          source_root: root,
-          metadata_json: metadataJson,
-        })
-        summary.indexedFiles += 1
-
+    if (existingMetadata.scanFingerprint === scanFingerprint) {
+      summary.reusedFiles += 1
+      const expectedType = expectedTextExtractorType(filePath)
+      if (expectedType && !hasTextBlob(db, id, 'file', expectedType)) {
+        trace(`text-extract (reused fingerprint) start ${filePath}`)
         const textExtraction = extractTextFromFileResult(filePath)
-        if (textExtraction.success && textExtraction.content && textExtraction.extractorType) {
+        trace(`text-extract (reused fingerprint) done ${filePath}`)
+        if (
+          textExtraction.success &&
+          textExtraction.content &&
+          textExtraction.extractorType
+        ) {
           upsertTextBlob(db, {
             sourceId: id,
             sourceType: 'file',
@@ -139,36 +110,106 @@ export function scanFiles(
           })
           summary.textExtractions += 1
         }
-
-        if (imageMetadata?.summaryText) {
-          upsertTextBlob(db, {
-            sourceId: id,
-            sourceType: 'file',
-            extractorType: imageMetadata.raw.isScreenshot === true
-              ? 'screenshot_metadata'
-              : 'image_metadata',
-            content: imageMetadata.summaryText,
-          })
-          summary.metadataExtractions += 1
-        }
-
-        if (imageMetadata?.isImage && shouldRunImageOcr(imageMetadata.raw, stat.size, ocrMode)) {
-          const imageOcr = extractImageOcr(filePath)
-          if (imageOcr.success && imageOcr.content && imageOcr.extractorType) {
-            upsertTextBlob(db, {
-              sourceId: id,
-              sourceType: 'file',
-              extractorType: imageOcr.extractorType,
-              content: imageOcr.content,
-            })
-            summary.ocrExtractions += 1
-          }
-        }
       }
+      return
+    }
+
+    if (isImageFile(filePath)) trace(`image-metadata start ${filePath}`)
+    const imageMetadata = isImageFile(filePath) ? extractImageMetadata(filePath) : null
+    if (isImageFile(filePath)) trace(`image-metadata done ${filePath}`)
+    const metadata = mergeMetadata(existingMetadata, imageMetadata?.raw ?? {}, {
+      scanFingerprint,
+      lastIndexedAt: new Date().toISOString(),
+      isImage: imageMetadata?.isImage ?? false,
+    })
+    const metadataJson = JSON.stringify(metadata)
+
+    insert.run({
+      id,
+      path: filePath,
+      name: path.basename(filePath),
+      extension: path.extname(filePath).replace('.', ''),
+      mime_type: imageMetadata?.mimeType ?? null,
+      size_bytes: stat.size,
+      created_at: new Date(stat.birthtimeMs || Date.now()).toISOString(),
+      modified_at: new Date(stat.mtimeMs || Date.now()).toISOString(),
+      accessed_at: new Date(stat.atimeMs || Date.now()).toISOString(),
+      source_root: root,
+      metadata_json: metadataJson,
+    })
+    summary.indexedFiles += 1
+
+    trace(`text-extract start ${filePath}`)
+    const textExtraction = extractTextFromFileResult(filePath)
+    trace(`text-extract done ${filePath}`)
+    if (textExtraction.success && textExtraction.content && textExtraction.extractorType) {
+      upsertTextBlob(db, {
+        sourceId: id,
+        sourceType: 'file',
+        extractorType: textExtraction.extractorType,
+        content: textExtraction.content,
+      })
+      summary.textExtractions += 1
+    }
+
+    if (imageMetadata?.summaryText) {
+      upsertTextBlob(db, {
+        sourceId: id,
+        sourceType: 'file',
+        extractorType: imageMetadata.raw.isScreenshot === true
+          ? 'screenshot_metadata'
+          : 'image_metadata',
+        content: imageMetadata.summaryText,
+      })
+      summary.metadataExtractions += 1
+    }
+
+    if (imageMetadata?.isImage && shouldRunImageOcr(imageMetadata.raw, stat.size, ocrMode)) {
+      trace(`image-ocr start ${filePath}`)
+      const imageOcr = extractImageOcr(filePath)
+      trace(`image-ocr done ${filePath}`)
+      if (imageOcr.success && imageOcr.content && imageOcr.extractorType) {
+        upsertTextBlob(db, {
+          sourceId: id,
+          sourceType: 'file',
+          extractorType: imageOcr.extractorType,
+          content: imageOcr.content,
+        })
+        summary.ocrExtractions += 1
+      }
+    }
+  }
+
+  const processBatch = db.transaction((batch: string[], root: string) => {
+    for (const filePath of batch) {
+      processFile(filePath, root)
     }
   })
 
-  tx()
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue
+
+    trace(`fast-glob starting on ${root}`)
+    const entries = fg.sync(['**/*'], {
+      cwd: root,
+      onlyFiles: true,
+      absolute: true,
+      dot: false,
+      followSymbolicLinks: false,
+      suppressErrors: true,
+      ignore: excludeGlobs,
+    })
+    trace(`fast-glob returned ${entries.length} entries from ${root}`)
+
+    for (let i = 0; i < entries.length; i += batchSize) {
+      const batch = entries.slice(i, i + batchSize)
+      processBatch(batch, root)
+      const processed = Math.min(i + batch.length, entries.length)
+      trace(`committed batch: ${processed}/${entries.length} files in ${root}`)
+      onProgress?.({ root, processed, total: entries.length })
+    }
+  }
+
   return summary
 }
 

@@ -245,6 +245,35 @@ describe('scanFiles OCR modes', () => {
     expect(blobsAfterSecond[0]?.content).toBe('# Notes\n\nFirst body.')
   })
 
+  it('commits in batches and reports progress for each batch', () => {
+    const db = openDatabase(dbPath)
+
+    const fileCount = 7
+    for (let i = 0; i < fileCount; i += 1) {
+      const leafPath = path.join(tempRoot, 'notes', `entry-${i}.txt`)
+      fs.mkdirSync(path.dirname(leafPath), { recursive: true })
+      fs.writeFileSync(leafPath, `note ${i}`)
+    }
+
+    const progressEvents: Array<{ root: string; processed: number; total: number }> = []
+    scanFiles(db, [tempRoot], {
+      ocrMode: 'off',
+      batchSize: 2,
+      onProgress: event => progressEvents.push(event),
+    })
+
+    const indexed = db
+      .prepare(`SELECT COUNT(*) AS count FROM file_records`)
+      .get() as { count: number }
+    db.close()
+
+    expect(indexed.count).toBeGreaterThanOrEqual(fileCount)
+    const expectedBatches = Math.ceil((fileCount + 2) / 2)
+    expect(progressEvents.length).toBeGreaterThanOrEqual(expectedBatches)
+    const lastEvent = progressEvents[progressEvents.length - 1]
+    expect(lastEvent?.processed).toBe(lastEvent?.total)
+  })
+
   it('reuses unchanged files on a second scan instead of rerunning extraction', () => {
     const db = openDatabase(dbPath)
 
