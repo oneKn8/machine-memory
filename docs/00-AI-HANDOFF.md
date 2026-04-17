@@ -43,6 +43,34 @@ This includes queries like:
 - "Show me the PDF about quantization."
 - "What repo was I working on before ruflo?"
 
+## Phase 1 Status
+
+Phase 1 is complete.
+
+Working pieces already exist:
+
+- CLI search and inspection
+- repo discovery
+- file crawling
+- text extraction
+- PDF extraction
+- screenshot and image OCR
+- metadata-backed image recall
+- local SQLite + FTS5 retrieval
+
+Phase 1 hardening is now in place:
+
+- incremental scan caching with stable file fingerprints
+- configurable exclusions and scan roots
+- typo-tolerant repo recall and stronger mixed-source ranking
+- provenance-rich `show` output
+- real-world validation on actual local data and actual local repos
+
+Use the completion checklist for the exact exit criteria:
+
+- [Phase 1 completion checklist](./18-phase-1-completion-checklist.md)
+- [Phase 1 validation notes](./19-phase-1-validation.md)
+
 ## What We Are Not Doing First
 
 We are not starting with:
@@ -100,6 +128,8 @@ Deliver through:
 - CLI first
 - API or MCP second
 - optional lightweight UI later
+
+The next active frontier is Phase 2 design and implementation, but Phase 1 should remain the stable baseline for search quality and trust.
 
 ## Long-Term Vision
 

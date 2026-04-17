@@ -162,3 +162,39 @@ Reason:
 - EXIF-backed image recall is important for the long-term vision
 - optional enrichment keeps setup simple
 - the baseline product should still work even without extra metadata tooling
+
+## D-014: Remove the per-root file cap in Phase 1
+
+Decision:
+
+- Phase 1 scanning should not silently cap each root at an arbitrary file limit
+
+Reason:
+
+- hidden caps make "scan this root" incomplete and untrustworthy
+- exclusion rules and incremental fingerprints are a better control surface than silent truncation
+- Phase 1 needs to answer "where is it?" honestly, even on larger roots
+
+## D-015: Make typo-tolerant recall part of the baseline
+
+Decision:
+
+- imperfect-name recall is part of the Phase 1 baseline, not a later enhancement
+
+Reason:
+
+- users often remember names approximately
+- repo recall feels broken if `gitinsteroid` cannot find `gitonsteroid`
+- lightweight fuzzy matching is enough to prove the product value before semantic retrieval exists
+
+## D-016: Validate with real local content, not only mocked fixtures
+
+Decision:
+
+- Phase 1 completion requires real machine-grounded validation in addition to unit tests
+
+Reason:
+
+- local search products can pass synthetic tests and still feel wrong in practice
+- real screenshots, PDFs, images, and repos reveal ranking and provenance problems that fixtures miss
+- future sessions need a durable record of the exact proof queries that justified the Phase 1 completion call

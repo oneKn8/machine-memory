@@ -16,6 +16,25 @@ The long-term vision is much bigger:
 - Recover projects, files, images, notes, and work by memory, time, and context
 - Build a private memory layer for a computer that both humans and AI agents can use
 
+## Status
+
+Phase 1 is complete.
+
+The current baseline already supports:
+
+- local repo recall
+- file and document recall
+- PDF text recall
+- screenshot OCR recall
+- image recall
+- incremental rescans
+- grounded `find` and `show` output
+
+Validation notes:
+
+- [Phase 1 completion checklist](./docs/18-phase-1-completion-checklist.md)
+- [Phase 1 validation notes](./docs/19-phase-1-validation.md)
+
 ## Read This First
 
 If you are a human or AI picking this up, start here:
@@ -46,6 +65,8 @@ If you are a human or AI picking this up, start here:
 - [15-current-state](./docs/15-current-state.md)
 - [16-project-history](./docs/16-project-history.md)
 - [17-phase-1-build-order](./docs/17-phase-1-build-order.md)
+- [18-phase-1-completion-checklist](./docs/18-phase-1-completion-checklist.md)
+- [19-phase-1-validation](./docs/19-phase-1-validation.md)
 
 ## Current Direction
 

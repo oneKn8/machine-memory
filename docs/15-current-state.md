@@ -52,6 +52,15 @@ Current implementation status:
 - screenshot/image OCR exists through system `tesseract`
 - image EXIF enrichment is supported when `exiftool` is installed
 - OCR-backed search results can now explain that they matched OCR text instead of only path text
+- incremental scan caching skips unchanged files and reuses prior extraction work
+- configurable exclusions and scan roots exist through config and CLI overrides
+- typo-tolerant repo recall and mixed-source ranking now demote noisy dependency/temp paths
+- `show` surfaces mime, source root, metadata, and indexed provenance snippets
+- real-world validation has been run against an actual local repo plus actual local screenshot, PDF, and image content
+
+Phase 1 status:
+
+- complete
 
 ## Locked Early Decisions
 
@@ -82,6 +91,8 @@ Add later:
 - semantic retrieval
 - richer project clustering
 - timeline-aware reasoning
+
+The practical priority right now is to preserve Phase 1 quality while moving into Phase 2 design and implementation.
 
 ## Phases
 
@@ -119,8 +130,9 @@ Add later:
 
 ## Immediate Next Step
 
-Keep tightening Phase 1 search quality:
+Begin Phase 2:
 
-- improve ranking on mixed repo/file/image indexes
-- expand trust signals in `show`
-- improve scan ergonomics and OCR cost controls
+- work resurrection
+- time-aware activity indexing
+- project/session continuity
+- stronger “what was I doing?” recall on top of the Phase 1 search substrate

@@ -159,7 +159,7 @@ V1 is good enough when:
 - the tool can find a local repo from an imperfect name
 - the tool can find screenshots by OCR text
 - the tool can find PDFs by topic
-- the tool can find an image by metadata-backed place hint
+- the tool can find an image by metadata, OCR, or filename cues from real local content
 - results explain themselves clearly enough to trust
 
 ## Suggested First Milestones
