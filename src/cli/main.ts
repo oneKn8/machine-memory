@@ -17,6 +17,7 @@ program
   .command('scan')
   .description('Scan configured roots')
   .option('-r, --root <path>', 'add a scan root for this run', collect, [])
+  .option('-x, --exclude <glob>', 'add an ignore glob for this run', collect, [])
   .option('--ocr-mode <mode>', 'OCR mode: off, screenshots, or all', parseOcrMode)
   .action(runScan)
 

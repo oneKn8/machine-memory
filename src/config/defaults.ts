@@ -6,6 +6,21 @@ export const APP_NAME = 'Machine Memory'
 export const CLI_NAME = 'mm'
 export const DEFAULT_DB_FILENAME = 'machine-memory.sqlite'
 export const DEFAULT_CONFIG_FILENAME = 'config.json'
+export const DEFAULT_EXCLUDE_GLOBS = [
+  '**/node_modules/**',
+  '**/.git/**',
+  '**/.pgdata/**',
+  '**/.cache/**',
+  '**/Library/**',
+  '**/__pycache__/**',
+  '**/.venv/**',
+  '**/venv/**',
+  '**/vendor/**',
+  '**/dist/**',
+  '**/build/**',
+  '**/.next/**',
+  '**/coverage/**',
+]
 
 export function getDefaultScanRoots(): string[] {
   const home = os.homedir()

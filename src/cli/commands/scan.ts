@@ -1,6 +1,6 @@
-import { getDefaultScanRoots } from '../../config/defaults.js'
+import { DEFAULT_EXCLUDE_GLOBS, getDefaultScanRoots } from '../../config/defaults.js'
 import { loadConfig } from '../../config/loadConfig.js'
-import type { OcrMode } from '../../config/types.js'
+import type { MachineMemoryConfig, OcrMode } from '../../config/types.js'
 import { openDatabase } from '../../index/db.js'
 import { scanFiles } from '../../scanner/fileScanner.js'
 import { scanRepos } from '../../repos/gitRepoScanner.js'
@@ -8,15 +8,18 @@ import { scanRepos } from '../../repos/gitRepoScanner.js'
 type ScanOptions = {
   root?: string[]
   ocrMode?: OcrMode
+  exclude?: string[]
 }
 
 export function runScan(options: ScanOptions = {}): void {
   const roots = resolveRoots(options)
+  const config = loadConfig()
   const ocrMode = resolveOcrMode(options)
+  const excludeGlobs = resolveExcludeGlobs(config, options)
   const db = openDatabase()
 
   const repoCount = scanRepos(db, roots)
-  const fileCount = scanFiles(db, roots, { ocrMode })
+  const fileSummary = scanFiles(db, roots, { ocrMode, excludeGlobs })
 
   db.close()
 
@@ -26,8 +29,13 @@ export function runScan(options: ScanOptions = {}): void {
   }
   console.log('')
   console.log(`OCR mode: ${ocrMode}`)
+  console.log(`Exclude globs: ${excludeGlobs.length}`)
   console.log(`Indexed repos: ${repoCount}`)
-  console.log(`Indexed files: ${fileCount}`)
+  console.log(`Indexed files: ${fileSummary.indexedFiles}`)
+  console.log(`Reused unchanged files: ${fileSummary.reusedFiles}`)
+  console.log(`Text extractions: ${fileSummary.textExtractions}`)
+  console.log(`Metadata extractions: ${fileSummary.metadataExtractions}`)
+  console.log(`OCR extractions: ${fileSummary.ocrExtractions}`)
 }
 
 function resolveRoots(options: ScanOptions): string[] {
@@ -54,4 +62,13 @@ function resolveOcrMode(options: ScanOptions): OcrMode {
 
   const config = loadConfig()
   return config.ocrMode ?? 'screenshots'
+}
+
+function resolveExcludeGlobs(
+  config: MachineMemoryConfig,
+  options: ScanOptions,
+): string[] {
+  const configured = config.excludeGlobs ?? []
+  const cli = options.exclude ?? []
+  return [...new Set([...DEFAULT_EXCLUDE_GLOBS, ...configured, ...cli])]
 }
