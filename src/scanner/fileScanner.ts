@@ -10,7 +10,6 @@ import { upsertTextBlob } from '../index/textBlobs.js'
 import { extractImageMetadata, isImageFile } from '../media/imageMetadata.js'
 import { extractImageOcr } from '../ocr/imageOcr.js'
 
-const FILE_LIMIT = 5000
 const MAX_IMAGE_OCR_BYTES = 6 * 1024 * 1024
 
 export type FileScanOptions = {
@@ -77,7 +76,7 @@ export function scanFiles(
         ignore: excludeGlobs,
       })
 
-      for (const filePath of entries.slice(0, FILE_LIMIT)) {
+      for (const filePath of entries) {
         const stat = safeStat(filePath)
         if (!stat) continue
         const id = stableId(filePath)

@@ -12,6 +12,12 @@ describe('parseQuery', () => {
     expect(parsed.sourceHints).toContain('screenshot')
   })
 
+  it('maps source hint aliases onto canonical hints', () => {
+    const parsed = parseQuery('find the photo I downloaded from yesterday')
+
+    expect(parsed.sourceHints).toEqual(['image', 'download'])
+  })
+
   it('extracts all supported source hints in canonical order', () => {
     const parsed = parseQuery(' Repo IMAGE PDF screenshot download ')
 

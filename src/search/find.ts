@@ -48,6 +48,8 @@ export function findMatches(
     .all(...buildRepoLikeParams(queryTokens)) as RepoRow[]
 
   const textRows = searchTextRows(db, queryTokens)
+  const fuzzyFileRows = findFuzzyFileRows(db, parsed.normalizedQuery)
+  const fuzzyRepoRows = findFuzzyRepoRows(db, parsed.normalizedQuery)
 
   const results = new Map<string, SearchResult>()
 
@@ -94,7 +96,7 @@ export function findMatches(
         existing.whyMatched,
         `Matched ${describeTextBlobType(row.extractor_type)}: ${row.content}`,
       )
-      existing.score += scoreBlobSourceHint(parsed.sourceHints, row.extractor_type) + 10
+      existing.score += 35 + scoreBlobSourceHint(parsed.sourceHints, row.extractor_type)
       continue
     }
     const target = row.source_type === 'repo'
@@ -131,9 +133,46 @@ export function findMatches(
       whyMatched: `Matched ${describeTextBlobType(row.extractor_type)}: ${row.content}`,
       score:
         row.source_type === 'repo'
-          ? 90 + scorePathQuality(target.path, 'repo')
-          : 80 + scoreBlobSourceHint(parsed.sourceHints, row.extractor_type) + scorePathQuality(target.path, 'file'),
+          ? 135 + scoreBlobSourceHint(parsed.sourceHints, row.extractor_type) + scorePathQuality(target.path, 'repo')
+          : 125 + scoreBlobSourceHint(parsed.sourceHints, row.extractor_type) + scorePathQuality(target.path, 'file'),
       lastModified: target.modified_at ?? undefined,
+    })
+  }
+
+  for (const row of fuzzyFileRows) {
+    if (results.has(row.id)) continue
+
+    const metadata = parseMetadata(row.metadata_json)
+    const similarity = fuzzySimilarity(parsed.normalizedQuery, `${row.name} ${stripExtension(row.name)}`)
+    if (similarity < 0.72) continue
+
+    results.set(row.id, {
+      resultId: row.id,
+      resultType: 'file',
+      title: row.name,
+      path: row.path,
+      whyMatched: `Matched similar file name or path (${Math.round(similarity * 100)}% name similarity)`,
+      score: 70 + Math.round(similarity * 50) + scoreSourceHints(parsed.sourceHints, metadata, row.extension, row.path) + scorePathQuality(row.path, 'file'),
+      lastModified: row.modified_at ?? undefined,
+    })
+  }
+
+  for (const row of fuzzyRepoRows) {
+    if (results.has(row.id)) continue
+
+    const similarity = fuzzySimilarity(parsed.normalizedQuery, row.repo_name)
+    if (similarity < 0.72) continue
+
+    results.set(row.id, {
+      resultId: row.id,
+      resultType: 'repo',
+      title: row.repo_name,
+      path: row.root_path,
+      whyMatched: row.remote_url
+        ? `Matched similar repo name (${Math.round(similarity * 100)}% similarity) and remote URL (${row.remote_url})`
+        : `Matched similar repo name (${Math.round(similarity * 100)}% similarity)`,
+      score: 72 + Math.round(similarity * 55) + scorePathQuality(row.root_path, 'repo'),
+      lastModified: row.last_commit_at ?? undefined,
     })
   }
 
@@ -288,15 +327,19 @@ function scoreSourceHints(
 
 function scoreBlobSourceHint(sourceHints: string[], extractorType: string): number {
   if (sourceHints.includes('screenshot') && extractorType.startsWith('screenshot_')) {
-    return 20
+    return 28
   }
 
   if (sourceHints.includes('image') && extractorType.startsWith('image_')) {
-    return 15
+    return 24
+  }
+
+  if (sourceHints.includes('image') && extractorType.startsWith('screenshot_')) {
+    return 18
   }
 
   if (sourceHints.includes('pdf') && extractorType === 'application/pdf') {
-    return 15
+    return 24
   }
 
   return 0
@@ -353,6 +396,8 @@ function scorePathQuality(pathValue: string, resultType: 'file' | 'repo'): numbe
     '/.pio/libdeps/',
     '/site-packages/',
     '/.mypy_cache/',
+    '/tmp/',
+    '/var/tmp/',
   ]
 
   for (const segment of noisySegments) {
@@ -382,4 +427,70 @@ function scorePathQuality(pathValue: string, resultType: 'file' | 'repo'): numbe
 function mergeMatchReasons(primary: string, secondary: string): string {
   if (primary.includes(secondary)) return primary
   return `${primary}; ${secondary}`
+}
+
+function findFuzzyFileRows(db: Database.Database, normalizedQuery: string): Row[] {
+  if (normalizedQuery.length < 4) return []
+
+  return db.prepare(
+    `
+    SELECT id, path, name, extension, mime_type, metadata_json, modified_at
+    FROM file_records
+    ORDER BY modified_at DESC
+    LIMIT 5000
+    `,
+  ).all() as Row[]
+}
+
+function findFuzzyRepoRows(db: Database.Database, normalizedQuery: string): RepoRow[] {
+  if (normalizedQuery.length < 4) return []
+
+  return db.prepare(
+    `
+    SELECT id, root_path, repo_name, last_commit_at, remote_url
+    FROM repo_records
+    ORDER BY last_commit_at DESC
+    LIMIT 1000
+    `,
+  ).all() as RepoRow[]
+}
+
+function stripExtension(name: string): string {
+  return name.replace(/\.[^.]+$/u, '')
+}
+
+function fuzzySimilarity(left: string, right: string): number {
+  const normalizedLeft = normalizeSeparators(left.toLowerCase())
+  const normalizedRight = normalizeSeparators(right.toLowerCase())
+  const maxLength = Math.max(normalizedLeft.length, normalizedRight.length)
+  if (maxLength === 0) return 0
+  const distance = levenshteinDistance(normalizedLeft, normalizedRight)
+  return 1 - distance / maxLength
+}
+
+function levenshteinDistance(left: string, right: string): number {
+  const prev = new Array<number>(right.length + 1).fill(0)
+  const curr = new Array<number>(right.length + 1).fill(0)
+
+  for (let j = 0; j <= right.length; j += 1) {
+    prev[j] = j
+  }
+
+  for (let i = 1; i <= left.length; i += 1) {
+    curr[0] = i
+    for (let j = 1; j <= right.length; j += 1) {
+      const substitutionCost = left[i - 1] === right[j - 1] ? 0 : 1
+      curr[j] = Math.min(
+        prev[j] + 1,
+        curr[j - 1] + 1,
+        prev[j - 1] + substitutionCost,
+      )
+    }
+
+    for (let j = 0; j <= right.length; j += 1) {
+      prev[j] = curr[j]
+    }
+  }
+
+  return prev[right.length] ?? 0
 }

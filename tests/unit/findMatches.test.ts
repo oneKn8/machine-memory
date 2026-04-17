@@ -157,4 +157,79 @@ describe('findMatches', () => {
       results.find(result => result.resultId === 'user-file')?.score ?? Infinity,
     )
   })
+
+  it('recovers typoed repo queries with fuzzy matching', () => {
+    const db = openDatabase()
+    db.prepare(
+      `
+      INSERT INTO repo_records (
+        id, root_path, repo_name, current_branch, remote_url, last_commit_at, metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'repo-1',
+      '/home/oneknight/zCoursework/gitonsteroid',
+      'gitonsteroid',
+      'main',
+      'https://github.com/oneKn8/gitonsteroid.git',
+      '2026-04-16T01:00:00.000Z',
+      '{}',
+    )
+
+    const results = findMatches(db, 'gitinsteroid')
+    db.close()
+
+    expect(results[0]?.resultId).toBe('repo-1')
+    expect(results[0]?.whyMatched).toContain('similar repo name')
+  })
+
+  it('prefers metadata-backed image hits over generic file-name noise for image queries', () => {
+    const db = openDatabase()
+    db.prepare(
+      `
+      INSERT INTO file_records (
+        id, path, name, extension, mime_type, modified_at, source_root, metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'tmp-image',
+      '/tmp/colorado-trip.png',
+      'colorado-trip.png',
+      'png',
+      'image/png',
+      '2026-04-16T01:00:00.000Z',
+      '/tmp',
+      JSON.stringify({ fileCategory: 'image', isScreenshot: false }),
+    )
+
+    db.prepare(
+      `
+      INSERT INTO file_records (
+        id, path, name, extension, mime_type, modified_at, source_root, metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'real-image',
+      '/home/oneknight/Pictures/IMG_4459.jpeg',
+      'IMG_4459.jpeg',
+      'jpeg',
+      'image/jpeg',
+      '2026-04-16T01:00:00.000Z',
+      '/home/oneknight/Pictures',
+      JSON.stringify({ fileCategory: 'image', isScreenshot: false }),
+    )
+
+    upsertTextBlob(db, {
+      sourceId: 'real-image',
+      sourceType: 'file',
+      extractorType: 'image_metadata',
+      content: 'image: IMG_4459.jpeg\ncategory: image\nlocation: Colorado',
+    })
+
+    const results = findMatches(db, 'image from Colorado')
+    db.close()
+
+    expect(results[0]?.resultId).toBe('real-image')
+    expect(results[0]?.whyMatched).toContain('image metadata')
+  })
 })
