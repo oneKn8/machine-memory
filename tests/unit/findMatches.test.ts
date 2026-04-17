@@ -112,4 +112,49 @@ describe('findMatches', () => {
     expect(results[0]?.resultId).toBe('shot-ocr')
     expect(results[0]?.whyMatched).toContain('screenshot OCR text')
   })
+
+  it('demotes noisy generated paths behind likely user-owned paths', () => {
+    const db = openDatabase()
+    db.prepare(
+      `
+      INSERT INTO file_records (
+        id, path, name, extension, mime_type, modified_at, source_root, metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'user-file',
+      '/home/oneknight/projects/machine-memory/src/server.ts',
+      'server.ts',
+      'ts',
+      null,
+      '2026-04-16T01:00:00.000Z',
+      '/home/oneknight/projects',
+      '{}',
+    )
+
+    db.prepare(
+      `
+      INSERT INTO file_records (
+        id, path, name, extension, mime_type, modified_at, source_root, metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'vendor-file',
+      '/home/oneknight/projects/demo/node_modules/pkg/server.ts',
+      'server.ts',
+      'ts',
+      null,
+      '2026-04-16T01:00:00.000Z',
+      '/home/oneknight/projects',
+      '{}',
+    )
+
+    const results = findMatches(db, 'server')
+    db.close()
+
+    expect(results[0]?.resultId).toBe('user-file')
+    expect(results.find(result => result.resultId === 'vendor-file')?.score).toBeLessThan(
+      results.find(result => result.resultId === 'user-file')?.score ?? Infinity,
+    )
+  })
 })

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runFind } from '../../src/cli/commands/find.js'
 import { runShow } from '../../src/cli/commands/show.js'
 import { openDatabase } from '../../src/index/db.js'
+import { upsertTextBlob } from '../../src/index/textBlobs.js'
 
 const mockState = vi.hoisted(() => ({
   tempHome: '',
@@ -29,8 +30,10 @@ type SeedRecord = {
   path: string
   name: string
   extension?: string | null
+  mimeType?: string | null
   modifiedAt?: string | null
   sourceRoot?: string | null
+  metadataJson?: string | null
 }
 
 type RepoSeedRecord = {
@@ -146,6 +149,54 @@ describe('CLI commands', () => {
     expect(process.exitCode).toBe(0)
   })
 
+  it('prints trusted file details, metadata, and indexed text', () => {
+    seedFiles([
+      {
+        id: 'file-trust',
+        path: '/captures/screenshots/colorado-trip.png',
+        name: 'colorado-trip.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        modifiedAt: '2026-04-15T20:00:00.000Z',
+        sourceRoot: '/captures',
+        metadataJson: JSON.stringify({
+          fileCategory: 'image',
+          isScreenshot: true,
+          city: 'Boulder',
+          state: 'Colorado',
+        }),
+      },
+    ])
+    seedTextBlob({
+      sourceId: 'file-trust',
+      sourceType: 'file',
+      extractorType: 'screenshot_metadata',
+      content: 'image: colorado-trip.png\ncategory: screenshot\nlocation: Boulder, Colorado',
+    })
+    seedTextBlob({
+      sourceId: 'file-trust',
+      sourceType: 'file',
+      extractorType: 'screenshot_ocr',
+      content: 'Colorado trip with my sister near the mountains',
+    })
+
+    runShow('file-trust')
+
+    expect(readLogLines()).toEqual([
+      'type: file',
+      'name: colorado-trip.png',
+      'path: /captures/screenshots/colorado-trip.png',
+      'extension: png',
+      'mime: image/png',
+      'modified: 2026-04-15T20:00:00.000Z',
+      'source root: /captures',
+      'metadata: {"fileCategory":"image","isScreenshot":true,"city":"Boulder","state":"Colorado"}',
+      'indexed text:',
+      '- screenshot_metadata: image: colorado-trip.png category: screenshot location: Boulder, Colorado',
+      '- screenshot_ocr: Colorado trip with my sister near the mountains',
+    ])
+  })
+
   it('prints indexed repo details', () => {
     seedRepos([
       {
@@ -187,9 +238,11 @@ function seedFiles(records: SeedRecord[]): void {
       path,
       name,
       extension,
+      mime_type,
       modified_at,
-      source_root
-    ) VALUES (?, ?, ?, ?, ?, ?)
+      source_root,
+      metadata_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const insertMany = db.transaction((rows: SeedRecord[]) => {
@@ -199,13 +252,21 @@ function seedFiles(records: SeedRecord[]): void {
         row.path,
         row.name,
         row.extension ?? null,
+        row.mimeType ?? null,
         row.modifiedAt ?? null,
         row.sourceRoot ?? null,
+        row.metadataJson ?? null,
       )
     }
   })
 
   insertMany(records)
+  db.close()
+}
+
+function seedTextBlob(input: Parameters<typeof upsertTextBlob>[1]): void {
+  const db = openDatabase()
+  upsertTextBlob(db, input)
   db.close()
 }
 

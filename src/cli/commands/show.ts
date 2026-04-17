@@ -91,7 +91,7 @@ export function runShow(id: string): void {
   if (textBlobs.length > 0) {
     console.log('indexed text:')
     for (const blob of textBlobs) {
-      console.log(`- ${blob.extractor_type}: ${blob.snippet}`)
+      console.log(`- ${blob.extractor_type}: ${normalizeSnippet(blob.snippet)}`)
     }
   }
 }
@@ -105,4 +105,8 @@ function parseMetadata(metadataJson: string | null): Record<string, unknown> {
   } catch {
     return {}
   }
+}
+
+function normalizeSnippet(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
 }

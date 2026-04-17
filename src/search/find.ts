@@ -55,7 +55,8 @@ export function findMatches(
     const metadata = parseMetadata(row.metadata_json)
     const score =
       scoreStringMatch(parsed.normalizedQuery, `${row.name} ${row.path}`) +
-      scoreSourceHints(parsed.sourceHints, metadata, row.extension, row.path)
+      scoreSourceHints(parsed.sourceHints, metadata, row.extension, row.path) +
+      scorePathQuality(row.path, 'file')
     results.set(row.id, {
       resultId: row.id,
       resultType: 'file',
@@ -72,7 +73,7 @@ export function findMatches(
       parsed.normalizedQuery,
       `${row.repo_name} ${row.root_path} ${row.remote_url ?? ''}`,
       120,
-    )
+    ) + scorePathQuality(row.root_path, 'repo')
     results.set(row.id, {
       resultId: row.id,
       resultType: 'repo',
@@ -130,8 +131,8 @@ export function findMatches(
       whyMatched: `Matched ${describeTextBlobType(row.extractor_type)}: ${row.content}`,
       score:
         row.source_type === 'repo'
-          ? 90
-          : 80 + scoreBlobSourceHint(parsed.sourceHints, row.extractor_type),
+          ? 90 + scorePathQuality(target.path, 'repo')
+          : 80 + scoreBlobSourceHint(parsed.sourceHints, row.extractor_type) + scorePathQuality(target.path, 'file'),
       lastModified: target.modified_at ?? undefined,
     })
   }
@@ -332,6 +333,50 @@ function describeTextBlobType(extractorType: string): string {
     default:
       return 'indexed text'
   }
+}
+
+function scorePathQuality(pathValue: string, resultType: 'file' | 'repo'): number {
+  const normalizedPath = pathValue.toLowerCase()
+  let score = 0
+
+  const noisySegments = [
+    '/node_modules/',
+    '/.git/',
+    '/__pycache__/',
+    '/.cache/',
+    '/.venv/',
+    '/venv/',
+    '/vendor/',
+    '/dist/',
+    '/build/',
+    '/.next/',
+    '/.pio/libdeps/',
+    '/site-packages/',
+    '/.mypy_cache/',
+  ]
+
+  for (const segment of noisySegments) {
+    if (normalizedPath.includes(segment)) {
+      score -= resultType === 'repo' ? 60 : 45
+    }
+  }
+
+  if (normalizedPath.includes('/downloads/')) {
+    score += 5
+  }
+
+  if (normalizedPath.includes('/pictures/')) {
+    score += 5
+  }
+
+  if (normalizedPath.includes('/projects/') || normalizedPath.includes('/work/') || normalizedPath.includes('/src/')) {
+    score += 12
+  }
+
+  const depthPenalty = Math.max(0, normalizedPath.split('/').filter(Boolean).length - 6)
+  score -= Math.min(depthPenalty * 2, 20)
+
+  return score
 }
 
 function mergeMatchReasons(primary: string, secondary: string): string {
