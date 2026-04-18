@@ -1,19 +1,33 @@
 # Machine Memory
 
-A local-first memory engine for a personal computer. It decides what context gets seen before any thinking happens — for the human who owns the machine and for any AI the human works with.
+A local-first, always-on memory engine for a personal computer. It decides what context gets seen before any thinking happens — for the human who owns the machine and for any AI the human works with.
 
-The machine already has everything: files, repos, screenshots, PDFs, downloads, notes, recent work. What it lacks is retrieval that actually finds things when you only remember fragments. Machine Memory is that retrieval layer.
+**The product:** a daemon (`mmd`) + thin CLI (`mm`) + embedded MCP server, installed with one line. Agents live on it. Humans dip in.
 
-Two consumers, same substrate:
+```bash
+npx machine-memory init
+```
 
-- **You**, asking "where is that PDF about quantization I read last month?" or "what repo was that called, `gitinsteroid` or something?"
-- **Any AI agent on your machine**, today burning tokens on blind `grep`/`glob`/file-read loops, tomorrow asking Machine Memory for the small grounded set of files that actually matter to its task.
+The daemon watches your filesystem in real time, maintains a tiered index (lexical + semantic + knowledge graph + LLM-compiled wiki + activity stream), and exposes it over MCP to any agent on the machine. The CLI is a thin client over the same tools the agent calls. Everything runs locally.
 
-The retrieval layer is the same. The output shape differs. The machine finally remembers, for both of you.
+Two consumers, one substrate:
 
-## What it does today
+- **You**, asking *"where is that PDF about quantization I read last month?"* or *"what was I working on before ruflo?"*
+- **Any AI agent on your machine** — Claude Code, Cursor, local LLMs — today burning tokens on blind `grep`/`glob`/file-read loops. Tomorrow asking Machine Memory for the small grounded set of files that actually matter.
 
-Phase 1 ships file, repo, PDF, DOCX, screenshot, and image recall over a local SQLite+FTS5 index with grounded provenance on every answer. Real queries that work on a real machine:
+Same retrieval, two output shapes. The machine finally remembers, for both of you.
+
+## Status — where we are
+
+- **Phase 0 (shipped):** CLI-first retrieval substrate — FTS5 index, PDF/DOCX/OCR extraction, ranker with provenance.
+- **Phase 1 (next):** turn the CLI tool into a daemon with an MCP server, shipped via `npx machine-memory init`.
+- **Phases 2–5:** activity stream, knowledge graph, LLM-compiled wiki, conversational surface, cross-platform polish — all layers of the same daemon.
+
+Phases are **layers of one product**, not independent ship frames. Canonical architecture: [`docs/23-product-v2-architecture.md`](./docs/23-product-v2-architecture.md). The pivot from staged ship to unified product is recorded as D-019 in [`docs/13-decision-log.md`](./docs/13-decision-log.md).
+
+## What works today (Phase 0)
+
+Every query returns grounded results with a "why matched" string. Real examples on a real machine:
 
 ```
 $ mm find "gitinsteroid"
@@ -24,8 +38,6 @@ $ mm find "gitinsteroid"
 
 $ mm find "Scanned 20 MCP Server Configs for Security Vulnerabilities"
 1. Screenshot from 2026-04-01 19-07-04.png
-   type: file
-   path: /home/oneknight/Pictures/screenshots/...
    why: Matched screenshot OCR text: … the trenches.
         [Scanned] [20] [MCP] [Server] [Configs] for [Security] [Vulnerabilities] …
 
@@ -35,92 +47,64 @@ $ mm find "stat hw"
 3. STAT HW 2 QUESTIONS SET.pdf  (PDF body + filename)
 ```
 
-Every result explains *why* it matched — filename, path, PDF body, DOCX body, OCR, image metadata, or fuzzy similarity. That's D-005 in the decision log: grounded retrieval is the trust feature.
+Validated against the real local machine — 91 of 93 indexed PDFs and 13 of 14 DOCX files carry extracted text after the Phase 1 reopen. See [`docs/19-phase-1-validation.md`](./docs/19-phase-1-validation.md).
 
-Validated against the real local machine, not fixtures: 91 of 93 indexed PDFs and 13 of 14 DOCX files carry extracted text blobs after the Phase 1 reopen. See [docs/19-phase-1-validation.md](./docs/19-phase-1-validation.md).
+## What we are building next (v2 Phase 1)
 
-## Quick start
+`mmd` — the daemon. `mm` — a thin MCP client over Unix socket. `npx machine-memory init` — the one-line install that bootstraps systemd user unit, prompts to register MCP with detected agent tools, kicks off first scan.
 
-Requires Node.js ≥ 20. Optional external tools for richer extraction: `pdftotext` (poppler-utils), `unzip`, `tesseract`, `exiftool`, `git`.
+After v2 Phase 1 ships:
 
-```bash
-git clone https://github.com/oneKn8/machine-memory.git
-cd machine-memory
-npm install
-npm run build
+- Drop a PDF into `~/Downloads` → it's searchable within 5 seconds, no manual command
+- Claude Code on the same machine calls `mm_find` over MCP and gets JSON results with citations instead of running blind `grep -r`
+- You never run `mm scan` again
 
-# verify external tools
-npm run doctor
-
-# index configured roots (first time ~1-2 minutes per 10k files)
-npm run scan
-
-# or scan a specific root with screenshot OCR on
-npm run scan -- --root ~/Pictures --ocr-mode screenshots
-
-# search
-npm run find -- "a book about stats"
-npm run find -- "image from Colorado"
-
-# inspect one result
-npm run find -- "stat hw"           # copy an id from the output
-npm run dev -- show <id>
-```
-
-Config lives at `~/.config/machine-memory/config.json`, index at `~/.local/share/machine-memory/machine-memory.sqlite`. Both are inspectable; the index is just SQLite.
-
-## How it works
+## Architecture at a glance
 
 ```
-your files           extractors         index              retrieval
-──────────           ──────────         ─────              ─────────
-repos     ─┐        ┌ pdftotext ─┐     ┌ file_records ┐   ┌ stop-words ─┐
-files     ─┼─► scan ┼ unzip      ┼──►  │ repo_records │   │ soft stem   │
-PDFs      ─┤        ┼ tesseract  ┤     │ text_blobs   │◄──┤ strict FTS  │
-screenshots┼        ┼ exiftool   ┤     │ text_blobs_  │   │ fuzzy       │
-DOCX      ─┘        └ markdown   ┘     │   _fts (FTS5)│   │ rank + prov │
-                                       └──────────────┘   └──────┬──────┘
-                                                                 │
-                                                          ┌──────▼──────┐
-                                                          │ `mm find`   │ (human)
-                                                          │ MCP tools   │ (AI, Phase 5)
-                                                          └─────────────┘
+┌─ filesystem ───┐   inotify     ┌─ mmd (daemon) ──────────────────┐
+│ ~/projects     │──── events ──▶│                                 │
+│ ~/Downloads    │               │  extraction pool (worker threads)│
+│ ~/Pictures     │               │  ↓                              │
+│ …              │               │  tiered index in one SQLite file│
+└────────────────┘               │   T1 FTS5 (lexical)             │
+                                 │   T2 sqlite-vec (semantic)      │
+                                 │   T3 entities + edges (graph)   │
+                                 │   T4 wiki/*.md (LLM-compiled)   │
+                                 │   T5 activity_events            │
+                                 │  ↓                              │
+                                 │  MCP server on Unix socket      │
+                                 └──────┬──────────────────────────┘
+                                        │
+                 ┌──────────────────────┼─────────────────────┐
+                 ▼                      ▼                     ▼
+            ┌────────┐        ┌──────────────────┐   ┌────────────┐
+            │   mm   │        │ Claude Code      │   │ Cursor,    │
+            │ (human)│        │ Claude Desktop   │   │ local LLMs │
+            └────────┘        └──────────────────┘   └────────────┘
 ```
 
-Ranker merges five candidate pools (filename, path, repo, full-text, fuzzy) and scores each with word-boundary name match, FTS strict-AND confidence, source-hint boosts, and path-quality penalties for vendor/dist/build directories. Details in `src/search/find.ts`.
+Full component breakdown, schema, install contract, and phase ship criteria in [`docs/23-product-v2-architecture.md`](./docs/23-product-v2-architecture.md).
 
 ## Design principles
 
-- **Local by default.** Nothing leaves the machine. No telemetry.
-- **Grounded.** Every result explains why it matched (D-005). Phase 5's agent interface uses the same provenance surface so AI answers can cite evidence.
-- **Inspectable.** The index is a SQLite file you can open with any SQLite tool.
-- **Useful before magical.** Exact/fuzzy/full-text/OCR first. Semantic retrieval (planned via `sqlite-vec`) waits until the FTS-miss corpus justifies it (D-011).
-- **Honest about scope.** If Phase 1 says "where is that file?" and not "what was I doing last Tuesday?", we ship Phase 1 and label Phase 2 as next.
-
-## Where it's going
-
-Six phases in [docs/06-roadmap-phases.md](./docs/06-roadmap-phases.md):
-
-| Phase | Goal | Status |
-|-------|------|--------|
-| 1. File and repo recall | "where is that thing?" | **shipped** |
-| 2. Work resurrection | "what was I doing?" | next — see [docs/22-phase-2-research.md](./docs/22-phase-2-research.md) |
-| 3. Machine actions | retrieval → open/reveal/pin | planned |
-| 4. Memory layer | thoughts + work + files together | planned |
-| 5. Agent interface | MCP server, grounded context for AI | planned |
-| 6. System-level | inotify/fanotify live indexing | parked until demand |
-
-Phase 5 is the payoff of the north star. When it lands, any agent running on this machine can call `mm_find` over MCP and get a small grounded result set with citations — instead of burning its context window on blind file crawls.
+- **Local by default.** No telemetry. The compiler LLM backend is `off` on first install — user opts in explicitly to local model or API.
+- **Grounded.** Every result explains why it matched. Phase 3's LLM-compiled wiki pages cite their source files the same way; agent answers stay citable.
+- **Inspectable.** The index is a single SQLite file at `~/.local/share/machine-memory/`. The wiki is plain markdown at `~/.local/share/machine-memory/wiki/`, Obsidian-compatible.
+- **Agents first, humans second.** MCP is the primary surface. The CLI is the same tools, pretty-printed for a terminal.
+- **One-line installable.** `npx machine-memory init` bootstraps everything. External binaries (`pdftotext`, `unzip`, `tesseract`, `exiftool`) are graceful optionals — `mm doctor` reports missing ones; product degrades rather than fails.
+- **Useful before magical.** FTS5 lexical retrieval is the default. Vector search, entity extraction, and wiki compilation are additive layers, not prerequisites.
 
 ## Read next
 
 Start here, in order:
 
 1. [Product thesis — the north star](./docs/01-product-thesis.md)
-2. [Current state — what's actually true right now](./docs/15-current-state.md)
-3. [Phase 2 research and F-009 plan](./docs/22-phase-2-research.md)
-4. [Decision log](./docs/13-decision-log.md) — especially D-005 (grounded), D-011 (semantic delay), D-017 (fingerprint vs extraction), D-018 (AI as first-class user)
-5. [Phase 1 validation](./docs/19-phase-1-validation.md) — what got validated and what had to be reopened
-6. [Competitive landscape](./docs/14-competitive-landscape.md) — why nobody else ships this
+2. [**Product v2 architecture — canonical**](./docs/23-product-v2-architecture.md)
+3. [Roadmap phases — layers of the v2 product](./docs/06-roadmap-phases.md)
+4. [Decision log](./docs/13-decision-log.md) — especially D-005 (grounded), D-018 (agents first-class), D-019 (phase collapse)
+5. [Phase 2 research — technical reference preserved through the pivot](./docs/22-phase-2-research.md)
+6. [Phase 0 validation](./docs/19-phase-1-validation.md) — what the shipped substrate actually proves
+7. [Competitive landscape](./docs/14-competitive-landscape.md) — why nobody ships this combination
 
 Full doc index lives under [`docs/`](./docs/).
