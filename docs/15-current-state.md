@@ -4,6 +4,10 @@ This file is a snapshot of what has already been decided and what the current di
 
 Use this when you want the fastest possible orientation.
 
+For a dated checkpoint of the current truth, also read:
+
+- [Memory snapshot (2026-04-18)](./21-memory-snapshot-2026-04-18.md)
+
 ## Working Name
 
 - Machine Memory

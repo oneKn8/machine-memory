@@ -40,10 +40,11 @@ Validation notes:
 If you are a human or AI picking this up, start here:
 
 1. [AI handoff](./docs/00-AI-HANDOFF.md)
-2. [Product thesis](./docs/01-product-thesis.md)
-3. [Current wedge](./docs/04-v1-machine-search.md)
-4. [Architecture](./docs/05-system-architecture.md)
-5. [Roadmap](./docs/06-roadmap-phases.md)
+2. [Memory snapshot (2026-04-18)](./docs/21-memory-snapshot-2026-04-18.md)
+3. [Product thesis](./docs/01-product-thesis.md)
+4. [Current wedge](./docs/04-v1-machine-search.md)
+5. [Architecture](./docs/05-system-architecture.md)
+6. [Roadmap](./docs/06-roadmap-phases.md)
 
 ## Document Map
 
@@ -67,6 +68,8 @@ If you are a human or AI picking this up, start here:
 - [17-phase-1-build-order](./docs/17-phase-1-build-order.md)
 - [18-phase-1-completion-checklist](./docs/18-phase-1-completion-checklist.md)
 - [19-phase-1-validation](./docs/19-phase-1-validation.md)
+- [20-phase-1-followups](./docs/20-phase-1-followups.md)
+- [21-memory-snapshot-2026-04-18](./docs/21-memory-snapshot-2026-04-18.md)
 
 ## Current Direction
 

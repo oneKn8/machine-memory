@@ -2,6 +2,10 @@
 
 This file is the fastest way for any future AI or collaborator to understand the project.
 
+For the fastest dated checkpoint, also read:
+
+- [Memory snapshot (2026-04-18)](./21-memory-snapshot-2026-04-18.md)
+
 ## What This Project Is
 
 Machine Memory is a local-first machine search and memory system.
@@ -156,6 +160,7 @@ Later phases can expand into:
 8. [Decision log](./13-decision-log.md)
 9. [Current state](./15-current-state.md)
 10. [Project history](./16-project-history.md)
+11. [Memory snapshot (2026-04-18)](./21-memory-snapshot-2026-04-18.md)
 
 ## Origin Story
 
