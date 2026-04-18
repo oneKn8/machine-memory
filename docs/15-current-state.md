@@ -14,7 +14,7 @@ For a dated checkpoint of the current truth, also read:
 
 ## Core Product Idea
 
-Build a private, local-first answer engine for a machine.
+Build a private, local-first memory engine for a personal computer — the system that decides what context gets seen before any thinking happens, for the human who owns the machine and for any AI the human works with.
 
 Important context:
 
@@ -32,7 +32,9 @@ The larger vision is:
 - work resurrection
 - timeline reconstruction
 - long-term machine memory
-- later, machine-aware context for AI agents
+- the retrieval substrate that grounds AI agents instead of letting them waste tokens on blind file crawls
+
+See [`01-product-thesis.md`](./01-product-thesis.md) for the full north-star statement.
 
 ## V1 Wedge
 

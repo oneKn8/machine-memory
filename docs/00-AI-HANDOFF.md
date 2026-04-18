@@ -8,13 +8,13 @@ For the fastest dated checkpoint, also read:
 
 ## What This Project Is
 
-Machine Memory is a local-first machine search and memory system.
+Machine Memory is a local-first memory engine for a personal computer. It is the system that decides what context gets seen before any thinking happens — for the human who owns the machine and for any AI the human works with.
 
 Current working product name:
 
 - `Machine Memory`
 
-It is meant to help a user recover things they know exist but cannot locate, such as:
+The first job it does is help a user recover things they know exist but cannot locate, such as:
 
 - files
 - repos
@@ -25,6 +25,8 @@ It is meant to help a user recover things they know exist but cannot locate, suc
 - notes
 - recent work
 
+The same retrieval substrate, exposed through a clean interface in later phases, becomes the grounding layer for AI agents: instead of blind `grep`/`glob`/file-read loops, an agent gets back the small set of files, snippets, and metadata that actually matter.
+
 The larger vision is to turn a machine into a searchable memory substrate that understands:
 
 - meaning
@@ -33,6 +35,8 @@ The larger vision is to turn a machine into a searchable memory substrate that u
 - places
 - projects
 - relationships
+
+See [`01-product-thesis.md`](./01-product-thesis.md) for the full north-star statement.
 
 ## What Problem We Are Solving First
 
