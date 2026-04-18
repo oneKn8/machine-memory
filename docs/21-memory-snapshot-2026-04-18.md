@@ -77,17 +77,18 @@ These are the facts future work should respect:
 1. Phase 1 was completed honestly, not prematurely.
    It was reopened to fix search/ranking/extraction/perf gaps, then closed again with validation.
 
-2. Full-root scans can still be expensive.
-   This is acceptable for now because OCR is explicit and controllable.
-
-3. The scanner no longer holds one huge transaction across the whole root.
+2. The scanner no longer holds one huge transaction across the whole root.
    It commits in batches and reports progress.
 
-4. The product is most believable when every answer explains why it matched.
-   Trust is not optional here.
+3. Full-root scans are still slower than pre-batching because of per-batch fsync cost (F-009). The fix is a small set of SQLite pragmas and is the first Phase 2 prep action — see `docs/22-phase-2-research.md` §1.
 
-5. Semantic retrieval is still intentionally deferred.
-   The baseline product should remain debuggable and grounded.
+4. The product is most believable when every answer explains why it matched. Trust is not optional here.
+
+5. Semantic retrieval is still intentionally deferred. `docs/22-phase-2-research.md` §6 names `sqlite-vec` as the chosen path when the time comes, with Anthropic's contextual-retrieval numbers as the target.
+
+6. AI agents are a first-class user of Machine Memory, not a downstream Phase 5 integration. Every design decision is evaluated against both paths (human recall + agent grounding). See D-018 and `docs/01-product-thesis.md`.
+
+7. Phase 2 has a concrete plan on disk: new `activity_events` table with typed `kind`, denormalized `subject_path`, JSON `data`; ingesters in order file-scanner → git-reflog → shell-history → screenshot timestamps. Ship criterion: 8/10 vague time-scoped queries return the right answer in top 3. See `docs/22-phase-2-research.md` §2.
 
 ## Current Frontier
 
@@ -112,10 +113,12 @@ Important constraint:
 If you are resuming work later, read in this order:
 
 1. [Current state](./15-current-state.md)
-2. [Phase 1 validation](./19-phase-1-validation.md)
-3. [Phase 1 followups](./20-phase-1-followups.md)
-4. [Decision log](./13-decision-log.md)
-5. [AI handoff](./00-AI-HANDOFF.md)
+2. [Product thesis and north star](./01-product-thesis.md)
+3. [Phase 2 research and F-009 plan](./22-phase-2-research.md)
+4. [Phase 1 validation](./19-phase-1-validation.md)
+5. [Phase 1 followups](./20-phase-1-followups.md)
+6. [Decision log](./13-decision-log.md) — especially D-017 and D-018
+7. [AI handoff](./00-AI-HANDOFF.md) — last, as reinforcement
 
 ## Practical Command Baseline
 

@@ -23,12 +23,14 @@ Suggested fields:
 - `created_at`
 - `modified_at`
 - `accessed_at`
-- `sha256` or other content hash when useful
+- `sha256` or other content hash when useful — not yet implemented; planned for Phase 2 per `docs/22-phase-2-research.md` §4 (rename detection, F-011).
 - `source_root`
 - `text_content_ref`
 - `ocr_content_ref`
 - `embedding_ref`
 - `metadata_json`
+
+Implemented columns as of Phase 1: `id, path, name, extension, mime_type, size_bytes, created_at, modified_at, accessed_at, source_root, metadata_json` (see `src/index/schema.ts`). Text, OCR, and (future) embeddings are stored in `text_blobs` keyed by `source_id`, not in inline refs — the `_ref` names above remained in the spec but the schema uses a single sidecar table per D-007.
 
 ### DirectoryRecord
 
@@ -134,12 +136,12 @@ Suggested fields:
 
 Do not implement these until they are needed:
 
-- `EventRecord`
-- `MemoryRecord`
-- `DailyLogRecord`
-- `PhoneRecord`
-- `CommandRecord`
-- `TimelineCluster`
+- `EventRecord` — promoted for Phase 2 as `activity_events`. Concrete schema and ingester order in `docs/22-phase-2-research.md` §2. Remove this bullet when the table ships.
+- `CommandRecord` — absorbed into `activity_events` via `kind='shell_command'` per the Phase 2 plan. No separate table.
+- `MemoryRecord` — Phase 4 (memory layer).
+- `DailyLogRecord` — Phase 4.
+- `PhoneRecord` — Phase 4 or later; tier 3 per `docs/12-ingest-sources.md`.
+- `TimelineCluster` — derived view over `activity_events` once sessions land, likely Phase 2.5 or Phase 3.
 
 ## Data Model Principles
 
