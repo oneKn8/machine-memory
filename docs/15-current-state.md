@@ -16,6 +16,8 @@ For a dated checkpoint of the current truth, also read:
 
 Build a private, local-first memory engine for a personal computer — the system that decides what context gets seen before any thinking happens, for the human who owns the machine and for any AI the human works with.
 
+**Canonical architecture:** [`docs/23-product-v2-architecture.md`](./23-product-v2-architecture.md). The product is an always-on daemon (`mmd`) + thin human CLI (`mm`) + embedded MCP server, installed with `npx machine-memory init`. Phases are layers of that one product, not separate ship frames (see D-019).
+
 Important context:
 
 - this project originally started from a different ambition: an autonomous multi-agent research lab
@@ -24,15 +26,14 @@ Important context:
 
 The first pain it solves is:
 
-- "Where the hell is that file?"
+- "Where the hell is that file?" (shipped, Phase 0)
 
 The larger vision is:
 
-- search by meaning
-- work resurrection
-- timeline reconstruction
-- long-term machine memory
-- the retrieval substrate that grounds AI agents instead of letting them waste tokens on blind file crawls
+- the substrate AI agents call over MCP, so they stop burning context on blind file crawls
+- an LLM-compiled wiki layer that summarizes your projects, people, and concepts from what actually changed on disk
+- a conversational surface where both humans and agents ask "what was I doing?" and get grounded, cited answers
+- all of it running locally, installed in one line
 
 See [`01-product-thesis.md`](./01-product-thesis.md) for the full north-star statement.
 
@@ -140,9 +141,4 @@ The practical priority right now is to preserve Phase 1 quality while moving int
 
 ## Immediate Next Step
 
-Begin Phase 2:
-
-- work resurrection
-- time-aware activity indexing
-- project/session continuity
-- stronger “what was I doing?” recall on top of the Phase 1 search substrate
+Begin Phase 1 of the v2 roadmap: daemon + MCP skeleton + `npx machine-memory init` install path. See `docs/23-product-v2-architecture.md` §7 for the phase scope and ship criteria, and `docs/06-roadmap-phases.md` for the sequencing.

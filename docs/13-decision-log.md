@@ -187,6 +187,26 @@ Reason:
 - repo recall feels broken if `gitinsteroid` cannot find `gitonsteroid`
 - lightweight fuzzy matching is enough to prove the product value before semantic retrieval exists
 
+## D-019: Collapse the staged phase ship into one always-on product
+
+Decision:
+
+- Stop treating the six phases as semi-independent ship frames. Build one product — a local always-on daemon plus thin CLI plus embedded MCP server — installed by `npx machine-memory init`. Each phase fills a layer of that product, not a separate tool.
+
+Reason:
+
+- The end goal was always a single substrate that grounds humans and AI on the machine they share (see D-018 and `docs/01-product-thesis.md`). Shipping that substrate in six semi-independent frames paid a coordination cost every time a later phase had to compose with an earlier one, and left the product in pieces that each required separate adoption work.
+- "Agents first, humans second" is impossible to honor when the agent interface is a Phase 5 integration. The MCP server has to be first-class from the first real ship after Phase 0.
+- Realtime indexing is not a polish item — it is what the product IS. Treating it as Phase 6 contradicted the north star.
+- The research synthesized in `docs/22-phase-2-research.md` (activity events, MCP tool schemas, sqlite-vec, SQLite pragmas) and the pivot synthesis in `docs/23-product-v2-architecture.md` (knowledge graph, LLM-as-compiler wiki, contextual retrieval, install contract) together make the unified architecture concrete enough to build without further staging.
+
+How this is applied:
+
+- `docs/23-product-v2-architecture.md` is the canonical architecture reference. `docs/06-roadmap-phases.md` is rewritten so each phase is a layer of the same daemon/CLI/MCP product.
+- F-010 (scheduled scans) and F-011 (delete/rename via scan diff) are closed as superseded by the daemon.
+- F-009's follow-up (extraction out of transaction, worker-pool extractors) is retained and moves into Phase 1 of the v2 roadmap — the daemon needs it to keep up under realtime load.
+- Every design review from here checks the proposal against both the human path AND the agent path (per D-018), not just the human path first.
+
 ## D-018: AI agents are a first-class user, not a downstream integration
 
 Decision:

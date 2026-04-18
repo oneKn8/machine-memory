@@ -8,24 +8,17 @@ For the fastest dated checkpoint, also read:
 
 ## What This Project Is
 
-Machine Memory is a local-first memory engine for a personal computer. It is the system that decides what context gets seen before any thinking happens — for the human who owns the machine and for any AI the human works with.
+Machine Memory is a local-first always-on memory daemon for a personal computer, plus a thin human CLI, plus an embedded MCP server. Installed with `npx machine-memory init`. Canonical architecture: [`docs/23-product-v2-architecture.md`](./23-product-v2-architecture.md).
+
+It is the system that decides what context gets seen before any thinking happens — for the human who owns the machine and for any AI the human works with.
 
 Current working product name:
 
 - `Machine Memory`
 
-The first job it does is help a user recover things they know exist but cannot locate, such as:
+The shipped Phase 0 substrate already helps a user recover files, repos, screenshots, images, PDFs, DOCX, downloads, notes, and recent work through a CLI. Phase 1 turns that substrate into a daemon with an MCP server; Phases 2-5 add activity, knowledge graph, LLM-compiled wiki, conversational surface, and cross-platform polish on top of the same daemon. Phases are layers of one product, not separate tools — see D-019 in [`13-decision-log.md`](./13-decision-log.md).
 
-- files
-- repos
-- screenshots
-- images
-- PDFs
-- downloads
-- notes
-- recent work
-
-The same retrieval substrate, exposed through a clean interface in later phases, becomes the grounding layer for AI agents: instead of blind `grep`/`glob`/file-read loops, an agent gets back the small set of files, snippets, and metadata that actually matter.
+For an AI agent running on the same machine: once Phase 1 ships, instead of blind `grep`/`glob`/file-read loops, the agent calls `mm_find` over MCP and gets back the small grounded set of files, snippets, and metadata that actually matter.
 
 The larger vision is to turn a machine into a searchable memory substrate that understands:
 

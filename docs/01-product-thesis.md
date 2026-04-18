@@ -68,9 +68,11 @@ Not:
 
 But:
 
-- a private answer engine for a machine, serving both the human and the machine's AI tools
+- a local always-on memory daemon + thin human CLI + embedded MCP server, installed in one line, serving both the human and the machine's AI tools on the same substrate
 
-The search layer is what lets the product work for humans today. The same retrieval layer, exposed through a clean interface, is what lets the product ground AI agents later. Both are the same product, delivered in phases — not a pivot.
+The daemon (`mmd`) runs continuously, watches the filesystem, maintains a tiered index (lexical + semantic + knowledge graph + LLM-compiled wiki + activity stream), and exposes the index to any agent on the machine through MCP. The CLI (`mm`) is a thin client over the same tools the agent calls. Everything lives locally.
+
+Agents live on it. Humans dip in. The canonical architecture is [`docs/23-product-v2-architecture.md`](./23-product-v2-architecture.md); the phased build order is [`docs/06-roadmap-phases.md`](./06-roadmap-phases.md).
 
 ## Design Principles
 
