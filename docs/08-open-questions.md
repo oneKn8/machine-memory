@@ -1,40 +1,48 @@
 # Open Questions
 
+Questions that still need a call. When a question gets a decision, move it to `docs/13-decision-log.md` and delete it from here.
+
 ## Product Questions
 
-- Is the first audience developers only, or all Linux power users?
-- Should the first UI be CLI-only, or should there be a minimal local web UI?
-- How much "AI" language should appear in the positioning versus plain search language?
+- How much "AI" language should appear in external positioning versus plain search language? The north star (see `01-product-thesis.md`) names both human and AI consumers, but that is an internal framing, not a public tagline.
+- Should there be a minimal local web UI in addition to the CLI, or does the CLI + future MCP cover the meaningful surfaces? The CLI-first call is locked (D-004), but web UI is unresolved.
 
 ## Technical Questions
 
-- Which Node.js libraries should power metadata extraction, OCR integration, and PDF/text parsing in V1?
-- How should result ranking blend path/name match, semantic similarity, recency, and project signals?
-- How should the system handle duplicate files and duplicate repos?
+- How should the system handle duplicate files (same sha256, different paths) and duplicate repos (same remote, different clones)? F-011 (sha256 column + rename detection) gets us the raw signal. The UX call — show all, dedupe, or cluster — is open.
+- When Phase 2 activity ingesters land, what is the correct staleness policy for each source (e.g., how far back do we read shell history; do we re-ingest git reflog on every scan or only diff)?
 
 ## Privacy Questions
 
-- Which directories are indexed by default?
-- How should the system exclude sensitive paths cleanly?
-- How are embeddings handled locally?
-- What telemetry, if any, is acceptable?
+- What is the default policy when Phase 5 exposes the index over MCP to a local agent? D-002 locks local-first, but "any agent running on this machine gets the whole index" is a real design choice that has not been made. Allowlist? Per-path ACL? All-or-nothing?
+- Shell history is an explicit opt-in per `docs/22-phase-2-research.md` §2. What about browser history and clipboard history when they eventually land in Phase 4? Opt-in by source, opt-in per directory, or prompt-on-first-index?
 
-## Expansion Questions
+## Scope Questions
 
-- When should daily logs and phone logs be introduced?
-- When should the product support timeline reconstruction?
-- When should an MCP server be added?
-- When does it make sense to add near-kernel or system-level collectors?
+- Linux-only for the foreseeable future, or does macOS/Windows land inside Phase 3 or 4? Currently Linux-first per D-004 but never formalized as Linux-*only*.
+- Phase 2 ship criterion is "8/10 vague time-scoped queries return the right answer in top 3" (per `docs/22-phase-2-research.md` §2). Is that the right grading bar, or should it be stricter before calling Phase 2 done?
 
 ## Naming Notes
 
-Working product name for now:
+Working product name: Machine Memory.
 
-- Machine Memory
+Alternative framings worth remembering in case we revisit:
 
-Alternative framings worth remembering:
-
-- Machine SEO
-- Machine AEO
+- Machine SEO / Machine AEO
 - Personal answer engine
 - Memory layer for your machine
+
+## Already Decided (Cross-Reference)
+
+Questions that used to live here and are now answered:
+
+- First audience → D-004 (developers / Linux power users first).
+- Implementation stack → D-009 (TypeScript + Node.js), D-010 (SQLite + FTS5).
+- Default ranking blend → D-014, D-015, D-017; see also ranker in `src/search/find.ts`.
+- Indexed directories by default → `src/config/defaults.ts` and `docs/12-ingest-sources.md`.
+- Node libraries for extraction and OCR → D-013 (exiftool optional), plus shipped choices: `pdftotext`, `unzip`, `tesseract`, `fast-glob`, `better-sqlite3`.
+- Sensitive-path exclusion mechanism → shipped: `DEFAULT_EXCLUDE_GLOBS` + per-root override via config or `--exclude`.
+- Telemetry acceptability → D-002 (local-first, privacy-first). Answer: none.
+- Embedding storage when we get there → `docs/22-phase-2-research.md` §6 (sqlite-vec alongside FTS5).
+- When does MCP land → Phase 5 per `docs/06-roadmap-phases.md`; concrete tool surface already specified in `docs/22-phase-2-research.md` §3.
+- When does system-level / kernel observability land → Phase 6 per roadmap; D-003 keeps it explicitly late.
