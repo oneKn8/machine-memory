@@ -187,6 +187,26 @@ Reason:
 - repo recall feels broken if `gitinsteroid` cannot find `gitonsteroid`
 - lightweight fuzzy matching is enough to prove the product value before semantic retrieval exists
 
+## D-018: AI agents are a first-class user, not a downstream integration
+
+Decision:
+
+- Treat AI agents running on the user's machine as a primary user of Machine Memory, alongside the human who owns the machine
+- Every phase must be evaluated against both paths: does it make human recall better, and does it make agent grounding better?
+
+Reason:
+
+- the machine's AI tools today waste tokens on blind `grep`/`glob`/file-read loops because there is no retrieval layer that is already right
+- a well-built local retrieval substrate for humans is already most of what agents need for grounded context
+- framing agents as a downstream "Phase 5 integration" invited design choices that would have served humans well but made later agent grounding harder (loose provenance, opaque ranking, no stable retrieval surface)
+- naming agents as a first-class user keeps the retrieval substrate honest from Phase 1 forward
+
+How this is applied:
+
+- provenance and "why matched" output, already required for human trust (D-005), now also serves as the evidence surface that lets agents cite what they used
+- retrieval APIs and data shapes should stay stable enough that the Phase 5 interface is a thin adapter, not a rewrite
+- Phase 2+ design reviews check both paths explicitly instead of only the human path
+
 ## D-017: Separate file-record fingerprint from extraction state
 
 Decision:
