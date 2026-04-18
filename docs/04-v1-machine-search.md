@@ -1,5 +1,7 @@
 # V1: Where The Hell Is It
 
+**Status:** shipped as Phase 1 (2026-04-17). This doc is preserved as the original spec; all scope items below are implemented. For what is actually true now, see `docs/15-current-state.md`. For what got reopened and revalidated after first close, see `docs/19-phase-1-validation.md`.
+
 ## Goal
 
 Ship a meaningful first product that solves one painful problem extremely well:

@@ -1,5 +1,7 @@
 # V1 Implementation Spec
 
+**Status:** delivered as Phase 1 (2026-04-17). This doc is the original spec; treat it as historical. For actual module layout see `docs/11-repo-layout.md`; for what shipped and what was validated see `docs/15-current-state.md` and `docs/19-phase-1-validation.md`.
+
 ## V1 Objective
 
 Build a local-first CLI tool that can answer vague search queries about:

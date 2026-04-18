@@ -1,5 +1,7 @@
 # Phase 1 Build Order
 
+**Status:** historical. Every step below shipped. Preserved as the record of how Phase 1 was sequenced. For the honest outcome (including items that had to be reopened after initial close), see `docs/18-phase-1-completion-checklist.md` and `docs/19-phase-1-validation.md`.
+
 This file translates the Phase 1 plan into a practical implementation order.
 
 ## Step 1: Repository Spine
