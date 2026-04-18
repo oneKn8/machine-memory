@@ -77,19 +77,23 @@ Fix: scanner now processes files in batches (default 500) with one short-lived t
 
 Follow-through: see followup F-009 below for the remaining per-batch fsync cost. The Phase 1 reopen validation after this fix shows **91 of 93 indexed PDFs** and **13 of 14 indexed DOCX files** have text blobs. The three remaining unextracted files are all legitimate content limitations (two image-only PDFs and one mislabeled `.docx` that is actually 56 bytes of plain text), not extractor bugs.
 
-### F-009: Per-batch commit cost on large scans
+### F-009 (resolved 2026-04-18): Per-batch commit cost on large scans
 
-Discovery: After switching from a single unbounded transaction to per-batch commits (F-007 fix), whole-root `~/projects` scan throughput dropped from roughly 30-50 files/sec to ~7.5 files/sec. Correctness and UX improved significantly, but raw speed regressed. The likely cause is that each committed batch now pays synchronous fsync costs that the prior all-or-nothing transaction amortized at the end.
+Original symptom: After switching from a single unbounded transaction to per-batch commits (F-007 fix), whole-root `~/projects` scan throughput dropped from roughly 30-50 files/sec to ~7.5 files/sec. Correctness and UX improved significantly, but raw speed regressed.
 
-Directions worth investigating:
+Root cause confirmed via research in `docs/22-phase-2-research.md` §1: each batch commit was paying `synchronous=FULL` fsync cost at SQLite defaults. The prior single-transaction design amortized this into one fsync at the end.
 
-- Adjust `PRAGMA synchronous` (currently defaults to FULL) to NORMAL during bulk scans, which is still WAL-safe.
-- Move heavy extraction (pdftotext, unzip, tesseract spawns) *outside* the transaction and only write blob results inside it, so batches stay small and fast.
-- Tune `batchSize` upward (currently 500) once extraction is factored out.
+Fix shipped in commit `cf74c81`: set five additional pragmas at database open time in `src/index/db.ts` — `synchronous=NORMAL` (primary speedup, WAL-safe), `cache_size=-64000`, `temp_store=MEMORY`, `mmap_size=268435456`, `wal_autocheckpoint=5000`, `journal_size_limit=67108864`.
 
-Status: acceptable for Phase 1. The scanner is now correct, safe to interrupt, and shows progress; speed optimization is a Phase 1.5 / Phase 2 polish item.
+Measured result on `~/projects` cold scan (index wiped, OCR off, batch size 500):
 
-When to do it: once Phase 2 activity indexing lands and scans become more frequent (every session), or earlier if a user complains about scan speed on a large machine.
+- Before: ~7.5 files/sec (the F-007 investigation baseline)
+- After: **68 files/sec** (19,500 files in 286 seconds)
+- **~9× speedup**, inside the 5–10× range SQLite's own docs predict for `synchronous=NORMAL` in WAL mode.
+
+Projected full `~/projects` scan time drops from ~2.5 hours to ~18 minutes. This unblocks F-010 scheduled scans: a 30-minute timer running an 18-minute scan is now practical.
+
+Deferred follow-up (not urgent): hoisting pdftotext/unzip/tesseract subprocess spawns *outside* the batch transaction so the SQLite lock isn't held across subprocess I/O. Would unlock parallel extraction via worker threads. Do this if the 68 f/s ceiling starts feeling slow for larger roots.
 
 ### F-008: Vague natural-language queries with semantically loose words
 
