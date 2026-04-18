@@ -103,33 +103,13 @@ Status: the ranker is dramatically improved over the Phase 1 baseline. The remai
 
 When to do it: after a small corpus of real vague queries is collected from actual use; then consider semantic scoring or learned re-ranking (this is also consistent with D-011's note that semantic retrieval lands after baseline search is strong).
 
-### F-010: Automatic and scheduled scans for dump-and-forget files
+### F-010 (superseded by v2 architecture): Automatic and scheduled scans for dump-and-forget files
 
-Discovery: scanning today is fully on-demand (`mm scan`). A file dropped into `~/Downloads` and never opened stays invisible to the index until the user manually triggers another scan. This breaks both sides of the north star: the human cannot recall something they forgot they had, and an AI agent cannot reason over files that arrived since the last explicit scan.
+Closed 2026-04-18 per D-019. The v2 architecture ([`docs/23-product-v2-architecture.md`](./23-product-v2-architecture.md)) replaces on-demand scans with a continuously-running daemon (`mmd`) that watches the filesystem via `inotify`/`chokidar` and indexes changes in real time. Scheduled scans were a workaround for the absence of a watcher; the watcher exists from v2 Phase 1.
 
-Two levels of fix:
+### F-011 (superseded by v2 architecture): Delete and rename detection
 
-- **Scheduled scan (near-term, Phase 1.5 / Phase 2):** ship documentation and an example `systemd --user` timer unit that runs `mm scan` every 30 minutes with the incremental cache. The Phase 1 reopen already made rescans cheap enough for this to be practical. Depends on F-009 being addressed first, otherwise a 30-minute timer running a 30-minute scan is useless.
-- **Real-time (Phase 6):** `inotify`/`fanotify` event streams feeding the index as files change, per the roadmap's Phase 6 commitment.
-
-Status: not in Phase 1. The scheduled-scan approach is small and practical once F-009 lands.
-
-When to do it: right after Phase 2 activity indexing, so the activity stream gets fresh data automatically instead of only when the user remembers to scan.
-
-### F-011: Delete and rename detection
-
-Discovery: the fingerprint cache catches edits (mtime change → re-extract), but it does not notice files that were deleted or renamed. Deleted files leave stale rows pointing at paths that no longer exist on disk; renames create a new record at the new path while the old record sits in the index as a ghost.
-
-Active harm today is small: a search can return a path that no longer resolves, which is mostly a trust leak rather than a crash. But for Phase 2 (work resurrection), rename and delete are *signals*, not noise — they are exactly the kind of activity the user will want to ask about ("what did I move last Tuesday?", "what did I clean out before the demo?").
-
-Plan:
-
-- At scan time, collect the full set of paths returned by fast-glob per root; diff against the set of existing `file_records` with the same `source_root`. Paths present in DB but missing from disk are deletions — record them as activity events (Phase 2) and mark the record accordingly.
-- Rename detection is harder because filesystems do not track renames natively. A content-hash on small/medium files (or a (size, first-N-bytes) tuple) lets the scanner notice "this new path has the same content as an old path that just disappeared." Leave this for Phase 2 when the activity model exists.
-
-Status: Phase 2 scope.
-
-When to do it: alongside the initial activity-event table in Phase 2. Do not retrofit onto Phase 1 in isolation — the delete/rename signal only becomes useful once there is somewhere to store activity.
+Closed 2026-04-18 per D-019. The v2 daemon receives `unlink`, `add`, and `rename` events directly from the watcher, so the scan-time diff-of-path-sets algorithm proposed here is no longer needed. Content-hash-based rename detection remains useful as an edge case (files renamed outside the watched window, e.g. daemon was stopped), and the `sha256` column on `file_records` from the original plan still has a home — it gets added in v2 Phase 2 for that edge case plus duplicate detection. The original algorithm design is preserved in [`docs/22-phase-2-research.md`](./22-phase-2-research.md) §4.
 
 ### F-012: Agent-oriented output shapes and stable retrieval API
 

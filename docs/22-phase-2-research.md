@@ -1,6 +1,17 @@
 # Phase 2 Research And F-009 Resolution Plan
 
-Status: research notes, dated 2026-04-18. Each section ends with a concrete proposal for the repo to act on.
+**Status:** preserved technical reference, dated 2026-04-18. The staged-phase framing around this research was superseded by the v2 architecture in [`docs/23-product-v2-architecture.md`](./23-product-v2-architecture.md) later the same day (D-019). The specific technical content below is still primary:
+
+- §1 F-009 SQLite pragma tuning — shipped as commit `cf74c81`.
+- §2 activity event schema, ingester order, denormalized subject_path, kind column — reused in v2 Phase 2.
+- §3 MCP tool shape for `mm_find` + `mm_get` — reused in v2 Phase 1.
+- §4 rename detection algorithm — reused in v2 Phase 2 via watcher events instead of scan-time diff.
+- §5 inotify vs fanotify — reused in v2 Phase 1 as watcher choice.
+- §6 sqlite-vec as the semantic layer — reused in v2 Phase 3 once the wiki layer gives it a pre-compiled substrate to embed over.
+
+Read this doc for the *how*; read doc 23 for the *what* and the product shape the how lives inside.
+
+
 
 This document is opinionated. Where prior art settles a question, the source is cited. Where the question is actually novel for our north star (D-018: AI agents are a first-class user), the design is called out as a deliberate invention, not copied.
 
