@@ -1,5 +1,16 @@
 # Roadmap Phases
 
+## Trajectory
+
+Each phase extends the same retrieval substrate toward the north star: a memory layer that serves both the human and the AI tools the human works with.
+
+- Phases 1–2 make the machine answer human recall questions well ("where is that file?", "what was I doing?").
+- Phases 3–4 turn recall into action and long-term memory across thoughts, work, and files.
+- Phase 5 exposes the same substrate to AI agents so they reason on top of grounded, pre-filtered context instead of blindly crawling the machine.
+- Phase 6 deepens the substrate with live system-level awareness once the product already has demand.
+
+The thing we are building is the same substrate throughout. The human interface ships first because it is the fastest way to prove the retrieval layer is actually good.
+
 ## Phase 1: File And Repo Recall
 
 Goal:
@@ -79,17 +90,19 @@ Ship when:
 
 Goal:
 
-- Expose machine memory to AI tools
+- Become the context substrate that decides what an AI sees before it thinks
+- Replace blind `grep`/`glob`/file-read loops with grounded, pre-filtered retrieval so AI agents stop wasting tokens exploring the machine
 
 Build:
 
 - MCP server
 - machine-aware retrieval API
 - grounded query responses for other agents
+- provenance surfaces so agents can cite evidence instead of hallucinating
 
 Ship when:
 
-- agents can query machine memory safely and usefully
+- agents can query machine memory safely and usefully, and the output is better context than they would have gathered on their own
 
 ## Phase 6: System-Level Deepening
 
