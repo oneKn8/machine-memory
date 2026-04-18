@@ -99,6 +99,50 @@ Status: the ranker is dramatically improved over the Phase 1 baseline. The remai
 
 When to do it: after a small corpus of real vague queries is collected from actual use; then consider semantic scoring or learned re-ranking (this is also consistent with D-011's note that semantic retrieval lands after baseline search is strong).
 
+### F-010: Automatic and scheduled scans for dump-and-forget files
+
+Discovery: scanning today is fully on-demand (`mm scan`). A file dropped into `~/Downloads` and never opened stays invisible to the index until the user manually triggers another scan. This breaks both sides of the north star: the human cannot recall something they forgot they had, and an AI agent cannot reason over files that arrived since the last explicit scan.
+
+Two levels of fix:
+
+- **Scheduled scan (near-term, Phase 1.5 / Phase 2):** ship documentation and an example `systemd --user` timer unit that runs `mm scan` every 30 minutes with the incremental cache. The Phase 1 reopen already made rescans cheap enough for this to be practical. Depends on F-009 being addressed first, otherwise a 30-minute timer running a 30-minute scan is useless.
+- **Real-time (Phase 6):** `inotify`/`fanotify` event streams feeding the index as files change, per the roadmap's Phase 6 commitment.
+
+Status: not in Phase 1. The scheduled-scan approach is small and practical once F-009 lands.
+
+When to do it: right after Phase 2 activity indexing, so the activity stream gets fresh data automatically instead of only when the user remembers to scan.
+
+### F-011: Delete and rename detection
+
+Discovery: the fingerprint cache catches edits (mtime change → re-extract), but it does not notice files that were deleted or renamed. Deleted files leave stale rows pointing at paths that no longer exist on disk; renames create a new record at the new path while the old record sits in the index as a ghost.
+
+Active harm today is small: a search can return a path that no longer resolves, which is mostly a trust leak rather than a crash. But for Phase 2 (work resurrection), rename and delete are *signals*, not noise — they are exactly the kind of activity the user will want to ask about ("what did I move last Tuesday?", "what did I clean out before the demo?").
+
+Plan:
+
+- At scan time, collect the full set of paths returned by fast-glob per root; diff against the set of existing `file_records` with the same `source_root`. Paths present in DB but missing from disk are deletions — record them as activity events (Phase 2) and mark the record accordingly.
+- Rename detection is harder because filesystems do not track renames natively. A content-hash on small/medium files (or a (size, first-N-bytes) tuple) lets the scanner notice "this new path has the same content as an old path that just disappeared." Leave this for Phase 2 when the activity model exists.
+
+Status: Phase 2 scope.
+
+When to do it: alongside the initial activity-event table in Phase 2. Do not retrofit onto Phase 1 in isolation — the delete/rename signal only becomes useful once there is somewhere to store activity.
+
+### F-012: Agent-oriented output shapes and stable retrieval API
+
+Discovery: per D-018, AI agents are a first-class user. But today the entire output surface is prose formatted for a human terminal: numbered results, free-form `whyMatched` strings, pretty snippets. An agent consuming this has to re-parse text to get at the structured data it already needs (result id, path, score, provenance type, snippet span).
+
+What this looks like concretely when Phase 5 lands:
+
+- A `--json` flag or a sibling `mm query` command that emits `{ results: [{ id, type, path, score, provenance: [...], snippet }], query: ..., totalCandidates: N }`.
+- Stable result IDs (we already have sha1-of-path for files) so an agent can cite a result and re-fetch its full record.
+- Smaller default result counts for agents (3–5) than for humans (10), with provenance attached to each.
+- Provenance strings that are already structured (`{extractor_type, byte_span, confidence}`) rather than only a pretty snippet string.
+- Agent-aware ranking hints (e.g., a coding agent can pass `?preferKinds=code,readme`) without replacing the ranker — same engine, additive signal.
+
+Status: the ranker and DB shape do not need to change. What needs to stabilize now is the *data shape* that passes between the ranker and the output layer, so Phase 5 is a thin adapter instead of a rewrite.
+
+When to do it: the adapter layer ships in Phase 5 with the MCP interface. But whenever Phase 2 or Phase 3 touches the internal retrieval API, prefer a shape that is already agent-friendly so we are not paying a refactor tax later.
+
 ## Resolved
 
 (Entries move here once a followup is closed, so the history is not lost.)
