@@ -5,7 +5,7 @@ export type DaemonRequest<P = unknown> = {
 }
 
 export type DaemonResponse<R = unknown> = {
-  id: string
+  id: string | null
   result?: R
   error?: { code: number; message: string; data?: unknown }
 }

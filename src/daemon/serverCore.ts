@@ -6,7 +6,6 @@ import { createHandlers, type Handlers } from './handlers.js'
 import {
   encodeMessage,
   MessageDecoder,
-  type DaemonMessage,
   type DaemonRequest,
   type DaemonResponse,
 } from './protocol.js'
@@ -27,8 +26,13 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
 
   const db = openDatabase(opts.dbPath)
   const handlers = createHandlers({ db, startedAt: Date.now() })
+  const sockets = new Set<net.Socket>()
 
-  const server = net.createServer(socket => attachConnection(socket, handlers))
+  const server = net.createServer(socket => {
+    sockets.add(socket)
+    socket.once('close', () => sockets.delete(socket))
+    attachConnection(socket, handlers)
+  })
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
     server.listen(opts.socketPath, () => {
@@ -47,6 +51,8 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
     socketPath: opts.socketPath,
     close: () =>
       new Promise<void>(resolve => {
+        for (const socket of sockets) socket.destroy()
+        sockets.clear()
         server.close(() => {
           db.close()
           if (fs.existsSync(opts.socketPath)) {
@@ -62,8 +68,10 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
   }
 }
 
-function isDaemonRequest(message: DaemonMessage): message is DaemonRequest {
-  return typeof (message as DaemonRequest).method === 'string'
+function isDaemonRequest(message: unknown): message is DaemonRequest {
+  if (typeof message !== 'object' || message === null) return false
+  const m = message as Record<string, unknown>
+  return typeof m.method === 'string' && m.result === undefined && m.error === undefined
 }
 
 function attachConnection(socket: net.Socket, handlers: Handlers): void {
@@ -71,21 +79,25 @@ function attachConnection(socket: net.Socket, handlers: Handlers): void {
   socket.setEncoding('utf8')
 
   socket.on('data', chunk => {
-    let messages: DaemonMessage[]
+    const text = typeof chunk === 'string' ? chunk : (chunk as Buffer).toString('utf8')
+    let messages
     try {
-      messages = decoder.push(chunk as unknown as string)
+      messages = decoder.push(text)
     } catch (cause) {
-      socket.write(encodeMessage(errorResponse('parse-error', -32700, (cause as Error).message)))
+      socket.write(encodeMessage(errorResponse(null, -32700, (cause as Error).message)))
       return
     }
     for (const message of messages) {
-      if (!isDaemonRequest(message)) continue
+      if (!isDaemonRequest(message)) {
+        socket.write(encodeMessage(errorResponse(null, -32600, 'invalid request')))
+        continue
+      }
       socket.write(encodeMessage(dispatch(message, handlers)))
     }
   })
 
-  socket.on('error', () => {
-    /* ignore — client gone */
+  socket.on('error', err => {
+    console.error('mmd: socket error:', err.message)
   })
 }
 
@@ -99,6 +111,6 @@ function dispatch(req: DaemonRequest, handlers: Handlers): DaemonResponse {
   }
 }
 
-function errorResponse(id: string, code: number, message: string): DaemonResponse {
+function errorResponse(id: string | null, code: number, message: string): DaemonResponse {
   return { id, error: { code, message } }
 }

@@ -88,4 +88,51 @@ describe('daemon roundtrip', () => {
     const stat = fs.statSync(socketPath)
     expect(stat.mode & 0o777).toBe(0o600)
   })
+
+  it('returns id: null on parse error (JSON-RPC 2.0 compliance)', async () => {
+    const res = await new Promise<DaemonResponse>((resolve, reject) => {
+      const client = net.createConnection(socketPath)
+      const decoder = new MessageDecoder()
+      client.setEncoding('utf8')
+      client.on('data', chunk => {
+        try {
+          const messages = decoder.push(chunk as string) as DaemonResponse[]
+          if (messages.length > 0) {
+            client.end()
+            resolve(messages[0]!)
+          }
+        } catch (err) {
+          reject(err)
+        }
+      })
+      client.on('error', reject)
+      client.on('connect', () => {
+        client.write('this is not json\n')
+      })
+    })
+    expect(res.id).toBeNull()
+    expect(res.error).toMatchObject({ code: -32700 })
+  })
+
+  it('closes promptly even when a client connection is still open', async () => {
+    const client = net.createConnection(socketPath)
+    await new Promise<void>((resolve, reject) => {
+      client.once('connect', () => resolve())
+      client.once('error', reject)
+    })
+
+    const start = Date.now()
+    await Promise.race([
+      server.close(),
+      new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error('server.close() did not return within 500 ms')), 500),
+      ),
+    ])
+    const elapsed = Date.now() - start
+    expect(elapsed).toBeLessThan(500)
+
+    // Re-open server so afterEach's close() is a no-op-friendly call
+    server = await createServer({ socketPath, dbPath })
+    client.destroy()
+  })
 })
