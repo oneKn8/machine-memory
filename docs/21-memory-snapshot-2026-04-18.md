@@ -107,7 +107,7 @@ If you are resuming work later, read in this order:
 Use these to reorient:
 
 ```bash
-cd /home/oneknight/projects/machine-memory
+cd /home/oneknight/projects/ai/machine-memory
 git status --short
 git log --oneline -15
 npm test
@@ -115,6 +115,8 @@ npm run typecheck
 npm run build
 npm run doctor
 ```
+
+> Note: the repo lives at `/home/oneknight/projects/ai/machine-memory` as of 2026-04-18. It was moved there mid-session from the original `/home/oneknight/projects/machine-memory` path by a background agent. If a Claude session was started from the old path, its Bash shell cwd will be stale; restart from the new path.
 
 ## Memory Principle
 

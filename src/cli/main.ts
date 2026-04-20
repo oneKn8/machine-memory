@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander'
+import { runDaemonStart, runDaemonStatus, runDaemonStop } from './commands/daemon.js'
 import { runDoctor } from './commands/doctor.js'
 import { runFind } from './commands/find.js'
 import { runScan } from './commands/scan.js'
@@ -34,6 +35,15 @@ program
   .action(runShow)
 
 program.command('doctor').description('Check local setup').action(runDoctor)
+
+const daemon = program.command('daemon').description('Control the mmd background daemon')
+daemon
+  .command('start')
+  .description('Start mmd (use --foreground for systemd)')
+  .option('--foreground', 'run in the foreground (do not detach)')
+  .action(runDaemonStart)
+daemon.command('stop').description('Stop a running mmd').action(runDaemonStop)
+daemon.command('status').description('Report mmd status').action(runDaemonStatus)
 
 program.parse()
 
