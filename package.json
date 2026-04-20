@@ -5,11 +5,13 @@
   "description": "Local-first machine search and memory engine",
   "type": "module",
   "bin": {
-    "mm": "./dist/cli/main.js"
+    "mm":  "./dist/cli/main.js",
+    "mmd": "./dist/daemon/server.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/cli/main.ts",
+    "daemon": "tsx src/daemon/server.ts",
     "scan": "tsx src/cli/main.ts scan",
     "find": "tsx src/cli/main.ts find",
     "doctor": "tsx src/cli/main.ts doctor",
