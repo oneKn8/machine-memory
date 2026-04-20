@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
 import net from 'node:net'
 import { openDatabase } from '../../src/index/db.js'
 import { createServer, type DaemonServer } from '../../src/daemon/serverCore.js'
+import { isDaemonReachable } from '../../src/daemon/client.js'
 import { encodeMessage, MessageDecoder, type DaemonResponse } from '../../src/daemon/protocol.js'
 
 function tmpDir(prefix: string): string {
@@ -158,6 +159,38 @@ describe('daemon roundtrip', () => {
     server = await createServer({ socketPath, dbPath, pidPath })
     expect(fs.existsSync(pidPath)).toBe(true)
     expect(fs.readFileSync(pidPath, 'utf8')).toBe(String(process.pid))
+  })
+
+  it('tears down server, db, and socket when chmod fails after listen', async () => {
+    // Free the existing server from beforeEach so the chmod-failing call
+    // can take a clean shot at this socket path.
+    await server.close()
+    const pidPath = path.join(dir, 'mmd.pid')
+
+    const chmodSpy = vi.spyOn(fs, 'chmodSync').mockImplementationOnce(() => {
+      throw new Error('simulated EACCES on chmod')
+    })
+
+    try {
+      await expect(
+        createServer({ socketPath, dbPath, pidPath }),
+      ).rejects.toThrow(/simulated EACCES/)
+
+      // Socket file must be cleaned up so the next bind is unobstructed.
+      expect(fs.existsSync(socketPath)).toBe(false)
+      // Pid file must not be left behind either.
+      expect(fs.existsSync(pidPath)).toBe(false)
+      // And no zombie listener should be reachable on that path.
+      expect(await isDaemonReachable(socketPath)).toBe(false)
+    } finally {
+      chmodSpy.mockRestore()
+    }
+
+    // A fresh start on the same socket must succeed — proving the previous
+    // failed attempt left no half-bound listener and no live-socket guard trip.
+    server = await createServer({ socketPath, dbPath })
+    const res = await rpc(socketPath, '_ping', {})
+    expect(res.result).toMatchObject({ ok: true })
   })
 
   it('closes promptly even when a client connection is still open', async () => {

@@ -1,6 +1,7 @@
 import net from 'node:net'
 import fs from 'node:fs'
 import path from 'node:path'
+import type Database from 'better-sqlite3'
 import { openDatabase } from '../index/db.js'
 import { isDaemonReachable } from './client.js'
 import { createHandlers, type Handlers } from './handlers.js'
@@ -47,58 +48,60 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
     fs.unlinkSync(opts.socketPath)
   }
 
-  const db = openDatabase(opts.dbPath)
-  const handlers = createHandlers({ db, startedAt: Date.now() })
+  let db: Database.Database | null = null
+  let server: net.Server | null = null
   const sockets = new Set<net.Socket>()
+  try {
+    db = openDatabase(opts.dbPath)
+    const handlers = createHandlers({ db, startedAt: Date.now() })
 
-  const server = net.createServer(socket => {
-    sockets.add(socket)
-    socket.once('close', () => sockets.delete(socket))
-    attachConnection(socket, handlers)
-  })
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(opts.socketPath, () => {
-      server.off('error', reject)
-      try {
-        fs.chmodSync(opts.socketPath, 0o600)
-      } catch (cause) {
-        reject(cause)
-        return
-      }
-      resolve()
+    server = net.createServer(socket => {
+      sockets.add(socket)
+      socket.once('close', () => sockets.delete(socket))
+      attachConnection(socket, handlers)
     })
-  })
-
-  if (opts.pidPath) {
-    try {
-      fs.writeFileSync(opts.pidPath, String(process.pid))
-    } catch (cause) {
-      // Pid write failed after the socket bound; tear the listener back down
-      // so we don't leave a half-initialized daemon behind.
-      await new Promise<void>(resolve => server.close(() => resolve()))
-      db.close()
-      if (fs.existsSync(opts.socketPath)) {
+    const boundServer = server
+    await new Promise<void>((resolve, reject) => {
+      boundServer.once('error', reject)
+      boundServer.listen(opts.socketPath, () => {
+        boundServer.off('error', reject)
         try {
-          fs.unlinkSync(opts.socketPath)
-        } catch {
-          /* ignore */
+          fs.chmodSync(opts.socketPath, 0o600)
+        } catch (cause) {
+          reject(cause)
+          return
         }
+        resolve()
+      })
+    })
+
+    if (opts.pidPath) {
+      try {
+        fs.writeFileSync(opts.pidPath, String(process.pid))
+      } catch (cause) {
+        throw new Error(
+          `failed to write pid file at ${opts.pidPath}: ${(cause as Error).message}`,
+        )
       }
-      throw new Error(
-        `failed to write pid file at ${opts.pidPath}: ${(cause as Error).message}`,
-      )
     }
+  } catch (cause) {
+    // Any failure after we opened the db, bound the socket, or wrote the pid
+    // file must leave the same clean state — no zombie listener, no stale
+    // socket, no leaked db handle, no orphan pid file.
+    await teardownPartial(server, db, opts.socketPath, opts.pidPath)
+    throw cause
   }
 
+  const liveServer = server
+  const liveDb = db
   return {
     socketPath: opts.socketPath,
     close: () =>
       new Promise<void>(resolve => {
         for (const socket of sockets) socket.destroy()
         sockets.clear()
-        server.close(() => {
-          db.close()
+        liveServer.close(() => {
+          liveDb.close()
           if (fs.existsSync(opts.socketPath)) {
             try {
               fs.unlinkSync(opts.socketPath)
@@ -116,6 +119,38 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
           resolve()
         })
       }),
+  }
+}
+
+async function teardownPartial(
+  server: net.Server | null,
+  db: Database.Database | null,
+  socketPath: string,
+  pidPath: string | undefined,
+): Promise<void> {
+  if (server) {
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+  if (db) {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+  if (fs.existsSync(socketPath)) {
+    try {
+      fs.unlinkSync(socketPath)
+    } catch {
+      /* ignore */
+    }
+  }
+  if (pidPath && fs.existsSync(pidPath)) {
+    try {
+      fs.unlinkSync(pidPath)
+    } catch {
+      /* ignore */
+    }
   }
 }
 
