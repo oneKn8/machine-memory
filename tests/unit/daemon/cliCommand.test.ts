@@ -129,6 +129,44 @@ describe('mm daemon status', () => {
     }
   })
 
+  it('detached start surfaces child error when socket is already taken', async () => {
+    // Under tsx, runDaemonStart resolves serverScript at src/daemon/server.js
+    // (not dist/). Drop a one-line ESM stub there that delegates to the built
+    // dist server so the spawned child runs the real createServer logic.
+    const distServer = path.resolve(process.cwd(), 'dist/daemon/server.js')
+    if (!fs.existsSync(distServer)) {
+      console.warn(`skipping: ${distServer} not built — run npm run build first`)
+      return
+    }
+    const stubPath = path.resolve(process.cwd(), 'src/daemon/server.js')
+    const stubExisted = fs.existsSync(stubPath)
+    if (!stubExisted) {
+      fs.writeFileSync(stubPath, "import '../../dist/daemon/server.js'\n")
+    }
+
+    // Stand up a real serverCore daemon on the tmp socket so the spawned
+    // child hits createServer's live-socket refusal and exits early. The
+    // parent must surface that reason, not a 2s timeout.
+    const socketPath = getDaemonSocketPath()
+    const server = await createServer({ socketPath })
+    try {
+      await runDaemonStart({})
+      const out = logs.join('\n')
+      expect(out).toMatch(/failed to start/i)
+      expect(out).toMatch(/already listening/i)
+      expect(process.exitCode).toBe(1)
+    } finally {
+      await server.close()
+      if (!stubExisted) {
+        try {
+          fs.unlinkSync(stubPath)
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  })
+
   it('foreground start cleans up on pid-write failure', async () => {
     // Stub writeFileSync to throw only for the pid path; the server listens
     // first, then the pid-write failure must trigger server.close() cleanup.

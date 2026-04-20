@@ -53,7 +53,7 @@ export async function runDaemonStart(opts: { foreground?: boolean }): Promise<vo
   }
   const child = spawn(process.execPath, [serverScript], {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', 'ignore', 'pipe'],
     env: process.env,
   })
   if (!child.pid) {
@@ -61,13 +61,35 @@ export async function runDaemonStart(opts: { foreground?: boolean }): Promise<vo
     process.exitCode = 1
     return
   }
+  // Capture child stderr so an early createServer failure (e.g. the
+  // live-socket guard refusing to steal an existing socket) can surface
+  // a real reason instead of a misleading 2s timeout.
+  let stderrBuf = ''
+  const stderrLimit = 2048
+  child.stderr?.setEncoding('utf8')
+  child.stderr?.on('data', (chunk: string) => {
+    if (stderrBuf.length >= stderrLimit) return
+    stderrBuf += chunk
+    if (stderrBuf.length > stderrLimit) stderrBuf = stderrBuf.slice(0, stderrLimit)
+  })
   child.unref()
+
+  // Race the pid-file poll against an early child exit. If the child dies
+  // before the pid file appears, surface its captured stderr.
+  type ExitInfo = { code: number | null; signal: NodeJS.Signals | null }
+  const exitState: { value: ExitInfo | null } = { value: null }
+  const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+    exitState.value = { code, signal }
+  }
+  child.once('exit', onExit)
+
   // The child runs `dist/daemon/server.js`, which writes the pid file via
   // createServer({pidPath}). Wait briefly for that to land so the next
   // `mm daemon status` finds the pid we report here.
   const deadline = Date.now() + 2000
   let pidFromFile: number | null = null
   while (Date.now() < deadline) {
+    if (exitState.value) break
     if (fs.existsSync(pidPath)) {
       const raw = fs.readFileSync(pidPath, 'utf8').trim()
       const parsed = Number(raw)
@@ -78,13 +100,41 @@ export async function runDaemonStart(opts: { foreground?: boolean }): Promise<vo
     }
     await sleep(50)
   }
+  child.off('exit', onExit)
+
   if (pidFromFile !== null) {
     console.log(`mmd started (pid ${pidFromFile})`)
-  } else {
-    console.log(
-      `mmd started (child pid ${child.pid}); pid file did not appear within 2s — check logs`,
-    )
+    return
   }
+  const exit = exitState.value
+  if (exit) {
+    // Give the stderr 'data' handler a tick to drain anything buffered.
+    await sleep(20)
+    const reason = lastErrorLine(stderrBuf)
+    const codeStr = exit.code !== null ? `exit code ${exit.code}` : `signal ${exit.signal}`
+    const suffix = reason ? `: ${reason}` : '; check stderr logs'
+    console.error(`mmd failed to start (${codeStr})${suffix}`)
+    process.exitCode = 1
+    return
+  }
+  console.log(
+    `mmd started (child pid ${child.pid}); pid file did not appear within 2s — check logs`,
+  )
+}
+
+function lastErrorLine(stderr: string): string | null {
+  if (!stderr) return null
+  const lines = stderr
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(l => l.length > 0)
+  if (lines.length === 0) return null
+  // Prefer the last line that looks like an error (contains "error",
+  // "failed", "already", or a colon). Fall back to the last non-empty line.
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (/error|failed|already|: /i.test(lines[i])) return lines[i]
+  }
+  return lines[lines.length - 1]
 }
 
 export async function runDaemonStop(): Promise<void> {
@@ -99,7 +149,7 @@ export async function runDaemonStop(): Promise<void> {
         'mmd is running but the pid is unknown (started outside `mm daemon start`).',
       )
       console.error(
-        "find it with `pgrep -af 'dist/daemon/server.js'` and kill manually.",
+        "find it with `pgrep -af 'dist/daemon/server.js|src/daemon/server.ts'` and kill manually.",
       )
       process.exitCode = 1
       return
