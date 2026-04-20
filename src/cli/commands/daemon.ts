@@ -20,14 +20,14 @@ export async function runDaemonStart(opts: { foreground?: boolean }): Promise<vo
 
   if (opts.foreground) {
     const { createServer } = await import('../../daemon/serverCore.js')
-    const server = await createServer({ socketPath: getDaemonSocketPath() })
+    let server
     try {
-      fs.writeFileSync(pidPath, String(process.pid))
+      server = await createServer({
+        socketPath: getDaemonSocketPath(),
+        pidPath,
+      })
     } catch (cause) {
-      console.error(
-        `mmd: failed to write pid file at ${pidPath}: ${(cause as Error).message}`,
-      )
-      await server.close()
+      console.error(`mmd: failed to start: ${(cause as Error).message}`)
       process.exitCode = 1
       return
     }
@@ -35,11 +35,6 @@ export async function runDaemonStart(opts: { foreground?: boolean }): Promise<vo
     const shutdown = async (sig: string): Promise<void> => {
       console.error(`mmd received ${sig}, shutting down`)
       await server.close()
-      try {
-        fs.unlinkSync(pidPath)
-      } catch {
-        /* ignore */
-      }
       process.exit(0)
     }
     process.on('SIGTERM', () => void shutdown('SIGTERM'))
@@ -67,8 +62,29 @@ export async function runDaemonStart(opts: { foreground?: boolean }): Promise<vo
     return
   }
   child.unref()
-  fs.writeFileSync(pidPath, String(child.pid))
-  console.log(`mmd started (pid ${child.pid})`)
+  // The child runs `dist/daemon/server.js`, which writes the pid file via
+  // createServer({pidPath}). Wait briefly for that to land so the next
+  // `mm daemon status` finds the pid we report here.
+  const deadline = Date.now() + 2000
+  let pidFromFile: number | null = null
+  while (Date.now() < deadline) {
+    if (fs.existsSync(pidPath)) {
+      const raw = fs.readFileSync(pidPath, 'utf8').trim()
+      const parsed = Number(raw)
+      if (Number.isFinite(parsed) && parsed > 0) {
+        pidFromFile = parsed
+        break
+      }
+    }
+    await sleep(50)
+  }
+  if (pidFromFile !== null) {
+    console.log(`mmd started (pid ${pidFromFile})`)
+  } else {
+    console.log(
+      `mmd started (child pid ${child.pid}); pid file did not appear within 2s — check logs`,
+    )
+  }
 }
 
 export async function runDaemonStop(): Promise<void> {

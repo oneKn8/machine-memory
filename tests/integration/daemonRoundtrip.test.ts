@@ -114,6 +114,52 @@ describe('daemon roundtrip', () => {
     expect(res.error).toMatchObject({ code: -32700 })
   })
 
+  it('writes a pid file when pidPath is provided', async () => {
+    await server.close()
+    const pidPath = path.join(dir, 'mmd.pid')
+    server = await createServer({ socketPath, dbPath, pidPath })
+    expect(fs.existsSync(pidPath)).toBe(true)
+    expect(fs.readFileSync(pidPath, 'utf8')).toBe(String(process.pid))
+    await server.close()
+    expect(fs.existsSync(pidPath)).toBe(false)
+    // Re-open server so afterEach's close() is a no-op-friendly call
+    server = await createServer({ socketPath, dbPath })
+  })
+
+  it('refuses to start when another daemon is already listening', async () => {
+    // First server already up via beforeEach. A second createServer on the
+    // same socket must refuse rather than steal the socket from the live one.
+    await expect(createServer({ socketPath, dbPath })).rejects.toThrow(
+      /another daemon is already listening/i,
+    )
+    // First server still owns the socket and is reachable.
+    const res = await rpc(socketPath, '_ping', {})
+    expect(res.result).toMatchObject({ ok: true })
+  })
+
+  it('refuses to start when pid file points at a live process', async () => {
+    await server.close()
+    const pidPath = path.join(dir, 'mmd.pid')
+    fs.writeFileSync(pidPath, String(process.pid))
+    await expect(createServer({ socketPath, dbPath, pidPath })).rejects.toThrow(
+      /another mmd is running/i,
+    )
+    // Pid file should still be present (we did not own it; do not unlink).
+    expect(fs.existsSync(pidPath)).toBe(true)
+    fs.unlinkSync(pidPath)
+    // Re-open server so afterEach's close() is a no-op-friendly call
+    server = await createServer({ socketPath, dbPath })
+  })
+
+  it('removes a stale pid file pointing at a dead process', async () => {
+    await server.close()
+    const pidPath = path.join(dir, 'mmd.pid')
+    fs.writeFileSync(pidPath, '99999999')
+    server = await createServer({ socketPath, dbPath, pidPath })
+    expect(fs.existsSync(pidPath)).toBe(true)
+    expect(fs.readFileSync(pidPath, 'utf8')).toBe(String(process.pid))
+  })
+
   it('closes promptly even when a client connection is still open', async () => {
     const client = net.createConnection(socketPath)
     await new Promise<void>((resolve, reject) => {

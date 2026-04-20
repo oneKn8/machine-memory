@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 import { createServer } from './serverCore.js'
-import { getDaemonSocketPath } from './paths.js'
+import { getDaemonPidPath, getDaemonSocketPath } from './paths.js'
 
 async function main(): Promise<void> {
-  const server = await createServer({ socketPath: getDaemonSocketPath() })
+  const server = await createServer({
+    socketPath: getDaemonSocketPath(),
+    pidPath: getDaemonPidPath(),
+  })
   console.error(`mmd listening on ${server.socketPath}`)
 
   let shuttingDown = false

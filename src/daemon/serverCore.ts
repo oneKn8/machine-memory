@@ -2,6 +2,7 @@ import net from 'node:net'
 import fs from 'node:fs'
 import path from 'node:path'
 import { openDatabase } from '../index/db.js'
+import { isDaemonReachable } from './client.js'
 import { createHandlers, type Handlers } from './handlers.js'
 import {
   encodeMessage,
@@ -13,6 +14,7 @@ import {
 export type CreateServerOptions = {
   socketPath: string
   dbPath?: string
+  pidPath?: string
 }
 
 export type DaemonServer = {
@@ -22,7 +24,28 @@ export type DaemonServer = {
 
 export async function createServer(opts: CreateServerOptions): Promise<DaemonServer> {
   fs.mkdirSync(path.dirname(opts.socketPath), { recursive: true })
-  if (fs.existsSync(opts.socketPath)) fs.unlinkSync(opts.socketPath)
+
+  // Pid file is the cheapest liveness check; honor it before touching the
+  // socket so we never even probe in the common "another mmd is up" case.
+  if (opts.pidPath && fs.existsSync(opts.pidPath)) {
+    const raw = fs.readFileSync(opts.pidPath, 'utf8').trim()
+    const pid = Number(raw)
+    if (Number.isFinite(pid) && pid > 0 && processAlive(pid)) {
+      throw new Error(`another mmd is running (pid ${pid}); pid file: ${opts.pidPath}`)
+    }
+    // Stale pid file (dead process or unparseable). Safe to remove.
+    fs.unlinkSync(opts.pidPath)
+  }
+
+  if (fs.existsSync(opts.socketPath)) {
+    // If something's actually listening, refuse to start. Stealing the socket
+    // would orphan the previous daemon and leave the user with two writers.
+    const reachable = await isDaemonReachable(opts.socketPath)
+    if (reachable) {
+      throw new Error(`another daemon is already listening on ${opts.socketPath}`)
+    }
+    fs.unlinkSync(opts.socketPath)
+  }
 
   const db = openDatabase(opts.dbPath)
   const handlers = createHandlers({ db, startedAt: Date.now() })
@@ -47,6 +70,27 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
     })
   })
 
+  if (opts.pidPath) {
+    try {
+      fs.writeFileSync(opts.pidPath, String(process.pid))
+    } catch (cause) {
+      // Pid write failed after the socket bound; tear the listener back down
+      // so we don't leave a half-initialized daemon behind.
+      await new Promise<void>(resolve => server.close(() => resolve()))
+      db.close()
+      if (fs.existsSync(opts.socketPath)) {
+        try {
+          fs.unlinkSync(opts.socketPath)
+        } catch {
+          /* ignore */
+        }
+      }
+      throw new Error(
+        `failed to write pid file at ${opts.pidPath}: ${(cause as Error).message}`,
+      )
+    }
+  }
+
   return {
     socketPath: opts.socketPath,
     close: () =>
@@ -62,9 +106,25 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
               /* ignore */
             }
           }
+          if (opts.pidPath && fs.existsSync(opts.pidPath)) {
+            try {
+              fs.unlinkSync(opts.pidPath)
+            } catch {
+              /* ignore */
+            }
+          }
           resolve()
         })
       }),
+  }
+}
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
   }
 }
 
