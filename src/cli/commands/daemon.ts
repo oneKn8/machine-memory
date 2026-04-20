@@ -89,7 +89,21 @@ export async function runDaemonStart(opts: { foreground?: boolean }): Promise<vo
 
 export async function runDaemonStop(): Promise<void> {
   const pidPath = getDaemonPidPath()
+  const socketPath = getDaemonSocketPath()
   if (!fs.existsSync(pidPath)) {
+    // No pid file does NOT mean no daemon — `mmd` and `npm run daemon` from
+    // before the pid-in-serverCore fix wouldn't have written one. Probe.
+    const reachable = await isDaemonReachable(socketPath)
+    if (reachable) {
+      console.error(
+        'mmd is running but the pid is unknown (started outside `mm daemon start`).',
+      )
+      console.error(
+        "find it with `pgrep -af 'dist/daemon/server.js'` and kill manually.",
+      )
+      process.exitCode = 1
+      return
+    }
     console.error('mmd not running (no pid file)')
     return
   }
@@ -123,6 +137,17 @@ export async function runDaemonStatus(): Promise<void> {
   const pidPath = getDaemonPidPath()
   const socketPath = getDaemonSocketPath()
   if (!fs.existsSync(pidPath)) {
+    // Pid file absent does NOT prove the daemon is stopped. Anything started
+    // outside `mm daemon start` (e.g. `mmd`, `npm run daemon`) leaves no pid
+    // file but still binds the socket. Probe before reporting stopped.
+    const reachable = await isDaemonReachable(socketPath)
+    if (reachable) {
+      console.log('mmd: running (pid unknown — started outside `mm daemon start`)')
+      console.log(
+        "hint: find with `pgrep -af 'dist/daemon/server.js|src/daemon/server.ts'` and kill manually",
+      )
+      return
+    }
     console.log(`mmd: stopped (socket: ${socketPath})`)
     return
   }
@@ -136,10 +161,16 @@ export async function runDaemonStatus(): Promise<void> {
     console.log(`mmd: pid ${pid} alive but socket not reachable; check ${socketPath}`)
     return
   }
-  const ping = await call<{ uptime_ms: number; version: string }>(socketPath, '_ping', {})
-  console.log(
-    `mmd: running (pid ${pid}, uptime ${Math.round(ping.uptime_ms / 1000)}s, version ${ping.version})`,
-  )
+  try {
+    const ping = await call<{ uptime_ms: number; version: string }>(socketPath, '_ping', {})
+    console.log(
+      `mmd: running (pid ${pid}, uptime ${Math.round(ping.uptime_ms / 1000)}s, version ${ping.version})`,
+    )
+  } catch (cause) {
+    console.log(
+      `mmd: running (pid ${pid}) but unresponsive: ${(cause as Error).message}`,
+    )
+  }
 }
 
 function processAlive(pid: number): boolean {

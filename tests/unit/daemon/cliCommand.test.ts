@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
+import net from 'node:net'
 import {
   runDaemonStart,
   runDaemonStatus,
@@ -9,6 +10,7 @@ import {
 } from '../../../src/cli/commands/daemon.js'
 import { isDaemonReachable } from '../../../src/daemon/client.js'
 import { getDaemonSocketPath } from '../../../src/daemon/paths.js'
+import { createServer, type DaemonServer } from '../../../src/daemon/serverCore.js'
 
 describe('mm daemon status', () => {
   let dir: string
@@ -60,6 +62,71 @@ describe('mm daemon status', () => {
     expect(process.exitCode).toBe(1)
     expect(logs.join('\n')).toMatch(/cannot find server script/i)
     expect(fs.existsSync(path.join(dir, 'mmd.pid'))).toBe(false)
+  })
+
+  it('status reports unresponsive when ping returns garbage', async () => {
+    // Stand up a "broken" daemon that accepts connections but writes garbage,
+    // forcing call(_ping) to reject. Without a guard, the rejection surfaces
+    // as an unhandled "failed to parse daemon message" stack trace.
+    const socketPath = getDaemonSocketPath()
+    const server = net.createServer(socket => {
+      socket.on('data', () => {
+        socket.write('not-valid-json\n')
+      })
+      socket.on('error', () => {
+        /* ignore — peer may close once call() rejects */
+      })
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(socketPath, () => resolve())
+    })
+    fs.writeFileSync(path.join(dir, 'mmd.pid'), String(process.pid))
+
+    try {
+      await expect(runDaemonStatus()).resolves.toBeUndefined()
+      expect(logs.join('\n')).toMatch(/unresponsive/i)
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+      try {
+        fs.unlinkSync(socketPath)
+      } catch {
+        /* already removed by server.close */
+      }
+    }
+  })
+
+  it('status reports running with unknown pid when daemon is up without pid file', async () => {
+    // Start a real serverCore daemon WITHOUT a pid path — simulates `mmd` or
+    // `npm run daemon`. Status must not lie that the daemon is stopped.
+    const socketPath = getDaemonSocketPath()
+    let server: DaemonServer
+    try {
+      server = await createServer({ socketPath })
+    } catch (err) {
+      throw err
+    }
+    try {
+      await runDaemonStatus()
+      const out = logs.join('\n')
+      expect(out).toMatch(/pid unknown/i)
+      expect(out).toMatch(/started outside/i)
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('stop refuses with hint when pid is unknown but socket is reachable', async () => {
+    const socketPath = getDaemonSocketPath()
+    const server = await createServer({ socketPath })
+    try {
+      await runDaemonStop()
+      const out = logs.join('\n')
+      expect(out).toMatch(/pid is unknown/i)
+      expect(process.exitCode).toBe(1)
+    } finally {
+      await server.close()
+    }
   })
 
   it('foreground start cleans up on pid-write failure', async () => {
