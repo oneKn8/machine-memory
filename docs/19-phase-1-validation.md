@@ -32,14 +32,16 @@ npm run scan -- --root /home/oneknight/zCoursework --ocr-mode off
 ### Real-content validation scan
 
 ```bash
-npm run scan -- --root /home/oneknight/projects/machine-memory/.validation-real --ocr-mode screenshots
+npm run scan -- --root /home/oneknight/projects/ai/machine-memory/.validation-real --ocr-mode screenshots
 ```
 
 ### Incremental repeat scan
 
 ```bash
-npm run scan -- --root /home/oneknight/projects/machine-memory/.validation-real --ocr-mode screenshots
+npm run scan -- --root /home/oneknight/projects/ai/machine-memory/.validation-real --ocr-mode screenshots
 ```
+
+> Paths reflect the repo's current location (`/home/oneknight/projects/ai/machine-memory`). The original commands used `/home/oneknight/projects/machine-memory` before the 2026-04-18 move; both forms are logically equivalent inside their respective working trees.
 
 ## Proof Queries
 
