@@ -63,7 +63,24 @@ describe('CLI commands', () => {
     fs.rmSync(tempHome, { recursive: true, force: true })
   })
 
-  it('prints path matches in descending modified order', () => {
+  it('falls through to direct DB when no daemon is reachable', async () => {
+    process.env.MM_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-find-fallback-'))
+    // Seed an empty DB so the direct path runs without errors.
+    const { openDatabase } = await import('../../src/index/db.js')
+    openDatabase().close()
+
+    const logs: string[] = []
+    vi.spyOn(console, 'log').mockImplementation(line => {
+      logs.push(String(line))
+    })
+    await runFind('anything')
+    expect(logs.join('\n')).toMatch(/no matches/i)
+
+    delete process.env.MM_DATA_DIR
+    vi.restoreAllMocks()
+  })
+
+  it('prints path matches in descending modified order', async () => {
     seedFiles([
       {
         id: 'file-old',
@@ -88,7 +105,7 @@ describe('CLI commands', () => {
       },
     ])
 
-    runFind('SCREENSHOTS')
+    await runFind('SCREENSHOTS')
 
     expect(console.log).toHaveBeenCalledTimes(1)
     expect(console.log).toHaveBeenCalledWith(
@@ -108,7 +125,7 @@ describe('CLI commands', () => {
     )
   })
 
-  it('prints an empty-state message when nothing matches', () => {
+  it('prints an empty-state message when nothing matches', async () => {
     seedFiles([
       {
         id: 'file-1',
@@ -119,7 +136,7 @@ describe('CLI commands', () => {
       },
     ])
 
-    runFind('quarterly report')
+    await runFind('quarterly report')
 
     expect(console.log).toHaveBeenCalledWith('No matches found.')
   })
