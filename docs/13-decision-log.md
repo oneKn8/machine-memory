@@ -256,3 +256,59 @@ Reason:
 - local search products can pass synthetic tests and still feel wrong in practice
 - real screenshots, PDFs, images, and repos reveal ranking and provenance problems that fixtures miss
 - future sessions need a durable record of the exact proof queries that justified the Phase 1 completion call
+
+## D-020: LLM compiler defaults to off on first install
+
+Decision:
+
+- the wiki/entity LLM compiler loop ships disabled by default. Users opt in explicitly with `mm compile enable --backend {local|api}`.
+- Phase 1 ships only the on/off switch and a stub `mm compile` command. The actual compiler arrives in Phase 3.
+
+Reason:
+
+- D-002 (local-first, privacy-first): turning on a heavy local model or sending file content to an off-machine API without explicit consent crosses a trust boundary
+- the daemon is fully useful via T1 (FTS) + T5 (activity) without the compiler — there is no functional reason to default it on
+- a default-on compiler would silently consume CPU/RAM (local) or money + bandwidth (api) on every settled file change
+
+How this is applied:
+
+- `~/.config/machine-memory/config.json` ships with `compiler.backend = "off"`
+- `mm compile enable` is the single explicit gesture that flips it; prints a one-screen summary of what changes (resource use, network egress) before writing the config
+
+## D-021: Daemon runs under systemd --user on Linux
+
+Decision:
+
+- `mmd` is hosted by a `systemd --user` unit on Linux, written by `npx machine-memory init` to `~/.config/systemd/user/mmd.service` and enabled with `systemctl --user enable --now mmd`
+- if systemd is absent (some containers, WSL1), `init` falls back to printing a `mm daemon start` command and exits cleanly without faking installation
+- macOS uses launchd (Phase 5); Windows is parked
+
+Reason:
+
+- systemd user units give us crash restart (`Restart=on-failure`), structured logs (journald), resource limits, and boot-time start without inventing any of it ourselves
+- a daemon that crashes silently is worse than a CLI that errors visibly (R-4 in doc 23) — restart-on-failure is non-negotiable
+- `systemctl --user status mmd` is a reflex Linux users already have; reusing it lowers operational surprise
+
+How this is applied:
+
+- the unit file is generated, not vendored, so the daemon binary path is correct for the user's install
+- `mm doctor` queries systemd for unit state and recent journal lines so daemon health is visible from the same CLI users already run
+
+## D-022: MCP registration prompts per detected agent
+
+Decision:
+
+- `npx machine-memory init` discovers locally installed MCP-speaking agent tools (Claude Desktop, Claude Code, Cursor) by their config paths and prompts `y/N` per tool before adding the `mmd` server entry
+- no agent config file is ever written without an explicit `y` for that specific tool
+- `mm mcp register <tool>` and `mm mcp unregister <tool>` exist for after-the-fact changes
+
+Reason:
+
+- writing into another application's config without consent is a trust violation, regardless of how convenient the auto-register would be
+- per-tool prompts mean a user who only wants the daemon hooked into Claude Code can decline Cursor without rerunning anything
+- registration is reversible and auditable: every write is preceded by a visible prompt and recorded in `~/.local/share/machine-memory/install.log`
+
+How this is applied:
+
+- detection is read-only — `init` lists what it found, then asks per tool
+- if no agents are present (or all are declined), the daemon still runs and is reachable via `mm` CLI; MCP registration is additive, not required for the product to work
