@@ -1,9 +1,11 @@
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runFind } from '../../src/cli/commands/find.js'
 import { runShow } from '../../src/cli/commands/show.js'
+import { getDaemonSocketPath } from '../../src/daemon/paths.js'
 import { openDatabase } from '../../src/index/db.js'
 import { upsertTextBlob } from '../../src/index/textBlobs.js'
 
@@ -59,6 +61,7 @@ describe('CLI commands', () => {
   afterEach(() => {
     vi.restoreAllMocks()
     mockState.tempHome = ''
+    delete process.env.MM_DATA_DIR
     process.exitCode = 0
     fs.rmSync(tempHome, { recursive: true, force: true })
   })
@@ -75,9 +78,60 @@ describe('CLI commands', () => {
     })
     await runFind('anything')
     expect(logs.join('\n')).toMatch(/no matches/i)
+  })
 
-    delete process.env.MM_DATA_DIR
-    vi.restoreAllMocks()
+  it('falls through to direct DB when daemon errors mid-call', async () => {
+    // Point both daemon paths and the DB at an isolated tmp dir so we own
+    // the socket file and the (empty) DB used by the direct fallback.
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-find-broken-daemon-'))
+    process.env.MM_DATA_DIR = dataDir
+    // Seed an empty DB so the fallback path opens cleanly.
+    const { openDatabase } = await import('../../src/index/db.js')
+    openDatabase().close()
+
+    // Stand up a "broken" daemon: a raw socket server that accepts the
+    // connection (so isDaemonReachable returns true) but writes garbage
+    // instead of valid NDJSON, forcing call() to reject during decode.
+    const socketPath = getDaemonSocketPath()
+    const server = net.createServer(socket => {
+      socket.on('data', () => {
+        socket.write('not-valid-json\n')
+      })
+      socket.on('error', () => {
+        /* ignore — peer may close once call() rejects */
+      })
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(socketPath, () => resolve())
+    })
+
+    const logs: string[] = []
+    const errors: string[] = []
+    vi.spyOn(console, 'log').mockImplementation(line => {
+      logs.push(String(line))
+    })
+    vi.spyOn(console, 'error').mockImplementation(line => {
+      errors.push(String(line))
+    })
+
+    try {
+      await runFind('anything')
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+      try {
+        fs.unlinkSync(socketPath)
+      } catch {
+        /* already removed by server.close */
+      }
+      fs.rmSync(dataDir, { recursive: true, force: true })
+    }
+
+    // Daemon warning landed on stderr, results from the direct DB path
+    // landed on stdout, and runFind resolved cleanly (no unhandled reject).
+    expect(errors.join('\n')).toMatch(/mmd:.*falling back to direct DB/i)
+    expect(logs.join('\n')).toMatch(/no matches/i)
+    expect(process.exitCode).toBe(0)
   })
 
   it('prints path matches in descending modified order', async () => {
