@@ -10,6 +10,8 @@ export async function runDaemonStart(opts: { foreground?: boolean }): Promise<vo
   if (fs.existsSync(pidPath)) {
     const existing = Number(fs.readFileSync(pidPath, 'utf8').trim())
     if (Number.isFinite(existing) && processAlive(existing)) {
+      // Already-running is a successful no-op (matches `systemctl start`).
+      // Slice 4's installer relies on this to be idempotent.
       console.error(`mmd already running (pid ${existing})`)
       return
     }
@@ -19,7 +21,16 @@ export async function runDaemonStart(opts: { foreground?: boolean }): Promise<vo
   if (opts.foreground) {
     const { createServer } = await import('../../daemon/serverCore.js')
     const server = await createServer({ socketPath: getDaemonSocketPath() })
-    fs.writeFileSync(pidPath, String(process.pid))
+    try {
+      fs.writeFileSync(pidPath, String(process.pid))
+    } catch (cause) {
+      console.error(
+        `mmd: failed to write pid file at ${pidPath}: ${(cause as Error).message}`,
+      )
+      await server.close()
+      process.exitCode = 1
+      return
+    }
     console.error(`mmd listening on ${server.socketPath} (pid ${process.pid})`)
     const shutdown = async (sig: string): Promise<void> => {
       console.error(`mmd received ${sig}, shutting down`)
@@ -39,11 +50,22 @@ export async function runDaemonStart(opts: { foreground?: boolean }): Promise<vo
   // Background: spawn detached. Slice 4 hands this to systemd.
   const here = path.dirname(fileURLToPath(import.meta.url))
   const serverScript = path.resolve(here, '..', '..', 'daemon', 'server.js')
+  if (!fs.existsSync(serverScript)) {
+    console.error(`mmd: cannot find server script at ${serverScript}.`)
+    console.error('Run `npm run build` first, or use `mm daemon start --foreground`.')
+    process.exitCode = 1
+    return
+  }
   const child = spawn(process.execPath, [serverScript], {
     detached: true,
     stdio: 'ignore',
     env: process.env,
   })
+  if (!child.pid) {
+    console.error('mmd failed to start: spawn returned no pid')
+    process.exitCode = 1
+    return
+  }
   child.unref()
   fs.writeFileSync(pidPath, String(child.pid))
   console.log(`mmd started (pid ${child.pid})`)
