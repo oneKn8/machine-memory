@@ -195,7 +195,7 @@ describe('CLI commands', () => {
     expect(console.log).toHaveBeenCalledWith('No matches found.')
   })
 
-  it('prints indexed file details and blanks nullable fields', () => {
+  it('prints indexed file details and blanks nullable fields', async () => {
     seedFiles([
       {
         id: 'file-1',
@@ -207,7 +207,7 @@ describe('CLI commands', () => {
       },
     ])
 
-    runShow('file-1')
+    await runShow('file-1')
 
     expect(readLogLines()).toEqual([
       'type: file',
@@ -220,7 +220,7 @@ describe('CLI commands', () => {
     expect(process.exitCode).toBe(0)
   })
 
-  it('prints trusted file details, metadata, and indexed text', () => {
+  it('prints trusted file details, metadata, and indexed text', async () => {
     seedFiles([
       {
         id: 'file-trust',
@@ -251,7 +251,7 @@ describe('CLI commands', () => {
       content: 'Colorado trip with my sister near the mountains',
     })
 
-    runShow('file-trust')
+    await runShow('file-trust')
 
     expect(readLogLines()).toEqual([
       'type: file',
@@ -268,7 +268,7 @@ describe('CLI commands', () => {
     ])
   })
 
-  it('prints indexed repo details', () => {
+  it('prints indexed repo details', async () => {
     seedRepos([
       {
         id: 'repo-1',
@@ -280,7 +280,7 @@ describe('CLI commands', () => {
       },
     ])
 
-    runShow('repo-1')
+    await runShow('repo-1')
 
     expect(readLogLines()).toEqual([
       'type: repo',
@@ -292,12 +292,81 @@ describe('CLI commands', () => {
     ])
   })
 
-  it('sets a non-zero exit code when show cannot find a record', () => {
-    runShow('missing-id')
+  it('sets a non-zero exit code when show cannot find a record', async () => {
+    await runShow('missing-id')
 
     expect(console.error).toHaveBeenCalledWith('No result found for id: missing-id')
     expect(process.exitCode).toBe(1)
     expect(console.log).not.toHaveBeenCalled()
+  })
+
+  it('mm show falls through to direct DB when daemon absent', async () => {
+    process.env.MM_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-show-fallback-'))
+    const { openDatabase } = await import('../../src/index/db.js')
+    const db = openDatabase()
+    db.prepare(
+      `INSERT INTO file_records (id, path, name, extension, mime_type, modified_at, source_root, metadata_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, '{}')`,
+    ).run('show1', '/tmp/a.md', 'a.md', 'md', 'text/markdown', '2026-04-18T10:00:00Z', '/tmp')
+    db.close()
+
+    const logs: string[] = []
+    vi.spyOn(console, 'log').mockImplementation(line => {
+      logs.push(String(line))
+    })
+    await runShow('show1')
+    expect(logs.join('\n')).toMatch(/a\.md/)
+  })
+
+  it('mm show falls through to direct DB when daemon errors mid-call', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-show-broken-daemon-'))
+    process.env.MM_DATA_DIR = dataDir
+    const { openDatabase } = await import('../../src/index/db.js')
+    const db = openDatabase()
+    db.prepare(
+      `INSERT INTO file_records (id, path, name, extension, mime_type, modified_at, source_root, metadata_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, '{}')`,
+    ).run('show1', '/tmp/a.md', 'a.md', 'md', 'text/markdown', '2026-04-18T10:00:00Z', '/tmp')
+    db.close()
+
+    const socketPath = getDaemonSocketPath()
+    const server = net.createServer(socket => {
+      socket.on('data', () => {
+        socket.write('not-valid-json\n')
+      })
+      socket.on('error', () => {
+        /* ignore — peer may close once call() rejects */
+      })
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(socketPath, () => resolve())
+    })
+
+    const logs: string[] = []
+    const errors: string[] = []
+    vi.spyOn(console, 'log').mockImplementation(line => {
+      logs.push(String(line))
+    })
+    vi.spyOn(console, 'error').mockImplementation(line => {
+      errors.push(String(line))
+    })
+
+    try {
+      await runShow('show1')
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+      try {
+        fs.unlinkSync(socketPath)
+      } catch {
+        /* already removed by server.close */
+      }
+      fs.rmSync(dataDir, { recursive: true, force: true })
+    }
+
+    expect(errors.join('\n')).toMatch(/mmd:.*falling back to direct DB/i)
+    expect(logs.join('\n')).toMatch(/a\.md/)
+    expect(process.exitCode).toBe(0)
   })
 })
 
