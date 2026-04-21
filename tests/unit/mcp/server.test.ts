@@ -84,6 +84,18 @@ describe('createMcpServer', () => {
     expect(text?.text).toMatch(/timed out/)
   })
 
+  it('mm_find advertises only the query parameter (no silent filters)', async () => {
+    const daemon = stubClient(async () => [])
+    const server = createMcpServer({ daemon })
+    await server.connect(serverTransport)
+    await client.connect(clientTransport)
+    const tools = await client.listTools()
+    const findTool = tools.tools.find(t => t.name === 'mm_find')!
+    const schema = findTool.inputSchema as { properties?: Record<string, unknown>; required?: string[] }
+    expect(Object.keys(schema.properties ?? {})).toEqual(['query'])
+    expect(schema.required).toEqual(['query'])
+  })
+
   it('mm_recent passes through since and limit', async () => {
     let captured: unknown = null
     const daemon = stubClient(async (_method, params) => { captured = params; return [] })

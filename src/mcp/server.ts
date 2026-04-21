@@ -97,11 +97,14 @@ export function createMcpServer(opts: CreateMcpServerOptions): McpServer {
     },
   )
 
+  // Slice 2 backs this with file_records.modified_at; Phase 2 will switch to
+  // the activity event stream. Kept out of the user-facing description so we
+  // don't leak implementation detail into agent prompts.
   server.registerTool(
     'mm_recent',
     {
       title: 'List recently modified files',
-      description: 'Return recently modified files from the index, optionally filtered by since timestamp. Slice 2 backs this with file_records.modified_at; Phase 2 will switch to the activity event stream.',
+      description: 'Return recently modified files from the index, optionally filtered by a since timestamp.',
       inputSchema: RecentInputSchema.shape,
       outputSchema: RecentResultSchema.shape,
     },
