@@ -166,7 +166,12 @@ function processAlive(pid: number): boolean {
 function isDaemonRequest(message: unknown): message is DaemonRequest {
   if (typeof message !== 'object' || message === null) return false
   const m = message as Record<string, unknown>
-  return typeof m.method === 'string' && m.result === undefined && m.error === undefined
+  return (
+    typeof m.method === 'string' &&
+    typeof m.id === 'string' &&
+    m.result === undefined &&
+    m.error === undefined
+  )
 }
 
 function attachConnection(socket: net.Socket, handlers: Handlers): void {

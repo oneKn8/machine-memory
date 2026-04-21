@@ -35,6 +35,29 @@ function rpc(socketPath: string, method: string, params: unknown): Promise<Daemo
   })
 }
 
+function rpcRaw(socketPath: string, line: string): Promise<DaemonResponse> {
+  return new Promise((resolve, reject) => {
+    const client = net.createConnection(socketPath)
+    const decoder = new MessageDecoder()
+    client.setEncoding('utf8')
+    client.on('data', chunk => {
+      try {
+        const messages = decoder.push(chunk as string) as DaemonResponse[]
+        if (messages.length > 0) {
+          client.end()
+          resolve(messages[0]!)
+        }
+      } catch (err) {
+        reject(err)
+      }
+    })
+    client.on('error', reject)
+    client.on('connect', () => {
+      client.write(line)
+    })
+  })
+}
+
 describe('daemon roundtrip', () => {
   let dir: string
   let server: DaemonServer
@@ -75,6 +98,19 @@ describe('daemon roundtrip', () => {
   it('returns an error envelope for unknown methods', async () => {
     const res = await rpc(socketPath, 'mm_nonexistent', {})
     expect(res.error).toMatchObject({ code: -32601 })
+  })
+
+  it('mm_get returns null result envelope for unknown id', async () => {
+    const res = await rpc(socketPath, 'mm_get', { id: 'definitely-not-a-real-id' })
+    expect(res.error).toBeUndefined()
+    expect(res.result).toBeNull()
+  })
+
+  it('rejects requests whose id is not a string', async () => {
+    const malformed = JSON.stringify({ id: 123, method: '_ping', params: {} }) + '\n'
+    const res = await rpcRaw(socketPath, malformed)
+    expect(res.error).toMatchObject({ code: -32600 })
+    expect(res.id).toBeNull()
   })
 
   it('removes a stale socket file on startup', async () => {
