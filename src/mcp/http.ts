@@ -30,27 +30,35 @@ export async function startMcpHttp(opts: StartHttpOptions): Promise<HttpListener
   }
   const url = `http://127.0.0.1:${address.port}/mcp`
 
-  httpServer.on('request', (req, res) => {
-    if (req.url !== '/mcp') {
-      res.statusCode = 404
-      res.end()
-      return
-    }
-    if (req.method !== 'POST') {
-      // Stateless mode does not need long-lived GET SSE streams; agents POST
-      // each request and read the JSON response. GET/DELETE get 405.
-      res.statusCode = 405
-      res.setHeader('Allow', 'POST')
-      res.end()
-      return
-    }
+  try {
+    httpServer.on('request', (req, res) => {
+      if (req.url !== '/mcp') {
+        res.statusCode = 404
+        res.end()
+        return
+      }
+      if (req.method !== 'POST') {
+        // Stateless mode does not need long-lived GET SSE streams; agents POST
+        // each request and read the JSON response. GET/DELETE get 405.
+        res.statusCode = 405
+        res.setHeader('Allow', 'POST')
+        res.end()
+        return
+      }
 
-    // Stateless transports cannot be reused across requests (the SDK throws
-    // if you try). Build a fresh server + transport per POST.
-    void handlePost(req, res, opts.daemon)
-  })
+      // Stateless transports cannot be reused across requests (the SDK throws
+      // if you try). Build a fresh server + transport per POST.
+      void handlePost(req, res, opts.daemon)
+    })
 
-  fs.writeFileSync(opts.urlPath, `${url}\n`)
+    fs.writeFileSync(opts.urlPath, `${url}\n`)
+  } catch (cause) {
+    // Anything that throws after the bind must close the listener; otherwise
+    // serverCore's teardownPartial has no handle to it and the loopback port
+    // stays bound, answering 405 for the rest of the process lifetime.
+    await new Promise<void>(resolve => httpServer.close(() => resolve()))
+    throw cause
+  }
 
   return {
     url,

@@ -105,4 +105,34 @@ describe('createMcpServer', () => {
     await client.callTool({ name: 'mm_recent', arguments: { since: '2026-04-19T00:00:00Z', limit: 7 } })
     expect(captured).toEqual({ since: '2026-04-19T00:00:00Z', limit: 7 })
   })
+
+  it('emits properly percent-encoded file:// URIs for paths with special chars', async () => {
+    const tricky: SearchResult[] = [
+      {
+        resultId: 'sp1',
+        resultType: 'file',
+        title: 'My File #1.md',
+        path: '/tmp/My File #1.md',
+        whyMatched: 'name match',
+        score: 100,
+        lastModified: '2026-04-21T10:00:00Z',
+      },
+    ]
+    const daemon = stubClient(async () => tricky)
+    const server = createMcpServer({ daemon })
+    await server.connect(serverTransport)
+    await client.connect(clientTransport)
+
+    const findRes = await client.callTool({ name: 'mm_find', arguments: { query: 'tricky' } })
+    const findLinks = (findRes.content as Array<{ type: string; uri?: string }>)
+      .filter(c => c.type === 'resource_link')
+    expect(findLinks).toHaveLength(1)
+    expect(findLinks[0]!.uri).toBe('file:///tmp/My%20File%20%231.md')
+
+    const recentRes = await client.callTool({ name: 'mm_recent', arguments: {} })
+    const recentLinks = (recentRes.content as Array<{ type: string; uri?: string }>)
+      .filter(c => c.type === 'resource_link')
+    expect(recentLinks).toHaveLength(1)
+    expect(recentLinks[0]!.uri).toBe('file:///tmp/My%20File%20%231.md')
+  })
 })

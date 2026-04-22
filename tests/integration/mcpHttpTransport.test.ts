@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
+import http from 'node:http'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { createServer, type DaemonServer } from '../../src/daemon/serverCore.js'
@@ -65,6 +66,47 @@ describe('mmd HTTP MCP transport', () => {
       query: 'thesis',
       results: [expect.objectContaining({ id: 'f1' })],
     })
+  })
+
+  it('closes the bound http listener if writing the discovery file fails', async () => {
+    // Tear down the running server first (beforeEach already started one).
+    await daemon!.close()
+    daemon = null
+
+    const urlPath = getMcpUrlPath()
+
+    // Force the next writeFileSync targeting urlPath to throw, simulating
+    // a disk/permission failure between bind and discovery-file write.
+    const realWrite = fs.writeFileSync.bind(fs)
+    const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation(((
+      p: Parameters<typeof fs.writeFileSync>[0],
+      data: Parameters<typeof fs.writeFileSync>[1],
+      options?: Parameters<typeof fs.writeFileSync>[2],
+    ): void => {
+      if (typeof p === 'string' && p === urlPath) {
+        throw new Error('simulated EACCES on mcp.url write')
+      }
+      return realWrite(p, data, options)
+    }) as typeof fs.writeFileSync)
+
+    // Spy on http.Server#close to prove the orphaned listener gets closed.
+    const closeSpy = vi.spyOn(http.Server.prototype, 'close')
+
+    await expect(createServer({
+      socketPath: path.join(dir, 'mmd.sock'),
+      pidPath: path.join(dir, 'mmd.pid'),
+      dbPath: path.join(dir, 'machine-memory.sqlite'),
+    })).rejects.toThrow(/simulated EACCES|mcp http failed/i)
+
+    // The HTTP listener must have been closed during the failed startup.
+    expect(closeSpy).toHaveBeenCalled()
+
+    // No leftover discovery file or unix socket.
+    expect(fs.existsSync(urlPath)).toBe(false)
+    expect(fs.existsSync(path.join(dir, 'mmd.sock'))).toBe(false)
+
+    writeSpy.mockRestore()
+    closeSpy.mockRestore()
   })
 
   it('binds to 127.0.0.1 only', async () => {

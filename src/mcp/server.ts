@@ -1,3 +1,4 @@
+import { pathToFileURL } from 'node:url'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { SearchResult } from '../types.js'
 import type { LoadedRecord } from '../index/loadRecord.js'
@@ -55,7 +56,7 @@ export function createMcpServer(opts: CreateMcpServerOptions): McpServer {
             { type: 'text' as const, text: JSON.stringify(structured, null, 2) },
             ...results.map(r => ({
               type: 'resource_link' as const,
-              uri: `file://${r.path}`,
+              uri: pathToFileURL(r.path).href,
               name: r.title,
             })),
           ],
@@ -124,7 +125,7 @@ export function createMcpServer(opts: CreateMcpServerOptions): McpServer {
             { type: 'text' as const, text: JSON.stringify(structured, null, 2) },
             ...results.map(r => ({
               type: 'resource_link' as const,
-              uri: `file://${r.path}`,
+              uri: pathToFileURL(r.path).href,
               name: r.title,
             })),
           ],
