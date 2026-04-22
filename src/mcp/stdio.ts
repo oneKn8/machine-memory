@@ -19,7 +19,10 @@ async function main(): Promise<void> {
   const server = createMcpServer({ daemon })
   const transport = new StdioServerTransport()
   await server.connect(transport)
+  let shuttingDown = false
   const shutdown = async (sig: string): Promise<void> => {
+    if (shuttingDown) return
+    shuttingDown = true
     process.stderr.write(`mmd-mcp: ${sig} received, shutting down\n`)
     await server.close()
     process.exit(0)
