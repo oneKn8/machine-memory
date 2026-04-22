@@ -3,14 +3,16 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type Database from 'better-sqlite3'
 import { openDatabase } from '../index/db.js'
-import { isDaemonReachable } from './client.js'
+import { call as daemonCall, isDaemonReachable } from './client.js'
 import { createHandlers, type Handlers } from './handlers.js'
+import { getMcpUrlPath } from './paths.js'
 import {
   encodeMessage,
   MessageDecoder,
   type DaemonRequest,
   type DaemonResponse,
 } from './protocol.js'
+import { startMcpHttp, type HttpListener } from '../mcp/http.js'
 
 export type CreateServerOptions = {
   socketPath: string
@@ -92,12 +94,35 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
     throw cause
   }
 
+  let httpListener: HttpListener | null = null
+  try {
+    httpListener = await startMcpHttp({
+      daemon: {
+        call: <R = unknown>(method: string, params: unknown): Promise<R> =>
+          daemonCall<R>(opts.socketPath, method, params),
+      },
+      urlPath: getMcpUrlPath(),
+    })
+  } catch (cause) {
+    // HTTP failure tears down the rest exactly like other post-bind setup.
+    await teardownPartial(server, db, opts.socketPath, opts.pidPath)
+    throw new Error(`mcp http failed to start: ${(cause as Error).message}`)
+  }
+
   const liveServer = server
   const liveDb = db
+  const liveHttp = httpListener
   return {
     socketPath: opts.socketPath,
-    close: () =>
-      new Promise<void>(resolve => {
+    close: async () => {
+      // Tear down the HTTP listener first so the discovery file is gone before
+      // anyone observing the socket sees the daemon disappear.
+      try {
+        await liveHttp.close()
+      } catch {
+        /* ignore */
+      }
+      await new Promise<void>(resolve => {
         for (const socket of sockets) socket.destroy()
         sockets.clear()
         liveServer.close(() => {
@@ -118,7 +143,8 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
           }
           resolve()
         })
-      }),
+      })
+    },
   }
 }
 
@@ -148,6 +174,17 @@ async function teardownPartial(
   if (pidPath && fs.existsSync(pidPath)) {
     try {
       fs.unlinkSync(pidPath)
+    } catch {
+      /* ignore */
+    }
+  }
+  // Mid-startup failures must not leave a stale discovery file behind. The
+  // path resolves off MM_DATA_DIR (a process-wide env var), so it's safe to
+  // recompute here without piping the path through every caller.
+  const mcpUrlPath = getMcpUrlPath()
+  if (fs.existsSync(mcpUrlPath)) {
+    try {
+      fs.unlinkSync(mcpUrlPath)
     } catch {
       /* ignore */
     }

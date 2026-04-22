@@ -1,0 +1,95 @@
+import http from 'node:http'
+import fs from 'node:fs'
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import { createMcpServer, type DaemonClient } from './server.js'
+
+export type StartHttpOptions = {
+  daemon: DaemonClient
+  urlPath: string
+}
+
+export type HttpListener = {
+  url: string
+  close: () => Promise<void>
+}
+
+export async function startMcpHttp(opts: StartHttpOptions): Promise<HttpListener> {
+  const httpServer = http.createServer()
+  await new Promise<void>((resolve, reject) => {
+    const onError = (err: Error): void => reject(err)
+    httpServer.once('error', onError)
+    httpServer.listen({ host: '127.0.0.1', port: 0 }, () => {
+      httpServer.off('error', onError)
+      resolve()
+    })
+  })
+  const address = httpServer.address()
+  if (!address || typeof address === 'string') {
+    httpServer.close()
+    throw new Error('mmd MCP HTTP listener failed to bind to a port')
+  }
+  const url = `http://127.0.0.1:${address.port}/mcp`
+
+  httpServer.on('request', (req, res) => {
+    if (req.url !== '/mcp') {
+      res.statusCode = 404
+      res.end()
+      return
+    }
+    if (req.method !== 'POST') {
+      // Stateless mode does not need long-lived GET SSE streams; agents POST
+      // each request and read the JSON response. GET/DELETE get 405.
+      res.statusCode = 405
+      res.setHeader('Allow', 'POST')
+      res.end()
+      return
+    }
+
+    // Stateless transports cannot be reused across requests (the SDK throws
+    // if you try). Build a fresh server + transport per POST.
+    void handlePost(req, res, opts.daemon)
+  })
+
+  fs.writeFileSync(opts.urlPath, `${url}\n`)
+
+  return {
+    url,
+    close: async () => {
+      try {
+        fs.unlinkSync(opts.urlPath)
+      } catch {
+        /* ignore */
+      }
+      await new Promise<void>(resolve => httpServer.close(() => resolve()))
+    },
+  }
+}
+
+async function handlePost(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  daemon: DaemonClient,
+): Promise<void> {
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+  })
+  const server = createMcpServer({ daemon })
+  try {
+    await server.connect(transport)
+    await transport.handleRequest(req, res)
+  } catch (cause) {
+    if (!res.headersSent) {
+      try {
+        res.statusCode = 500
+        res.end(`mcp http error: ${(cause as Error).message}\n`)
+      } catch {
+        /* ignore */
+      }
+    }
+  } finally {
+    res.on('close', () => {
+      void transport.close()
+      void server.close()
+    })
+  }
+}

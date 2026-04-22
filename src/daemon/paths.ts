@@ -12,3 +12,7 @@ export function getDaemonSocketPath(): string {
 export function getDaemonPidPath(): string {
   return path.join(dataDir(), 'mmd.pid')
 }
+
+export function getMcpUrlPath(): string {
+  return path.join(dataDir(), 'mcp.url')
+}
