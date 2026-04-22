@@ -327,12 +327,8 @@ import { z } from 'zod'
 
 export const FindInputSchema = z.object({
   query: z.string().min(1).describe('Natural language or keyword search query'),
-  kinds: z.array(z.enum(['file', 'repo', 'screenshot', 'pdf', 'docx', 'code'])).optional()
-    .describe('Filter results to these source kinds'),
-  path_prefix: z.string().optional().describe('Restrict to paths under this prefix'),
-  since: z.string().optional().describe('ISO 8601 timestamp; only return items modified since'),
-  limit: z.number().int().min(1).max(20).default(5).describe('Max results to return'),
 })
+// Note: filter fields (kinds, path_prefix, since, limit) were pruned during review — the daemon doesn't honor them yet, and advertising them would lie to agents. Re-add when the daemon supports filtering.
 
 export const FindResultSchema = z.object({
   query: z.string(),

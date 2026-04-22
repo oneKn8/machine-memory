@@ -82,6 +82,17 @@ async function handlePost(
     sessionIdGenerator: undefined,
   })
   const server = createMcpServer({ daemon })
+  // Register cleanup BEFORE handleRequest. Otherwise an early client
+  // disconnect can fire 'close' before the listener attaches, leaking the
+  // per-request server + transport under load or with flaky clients.
+  let closed = false
+  const closeStack = (): void => {
+    if (closed) return
+    closed = true
+    void transport.close()
+    void server.close()
+  }
+  res.once('close', closeStack)
   try {
     await server.connect(transport)
     await transport.handleRequest(req, res)
@@ -95,9 +106,8 @@ async function handlePost(
       }
     }
   } finally {
-    res.on('close', () => {
-      void transport.close()
-      void server.close()
-    })
+    // If the response already ended without 'close' firing yet (rare but
+    // possible in some Node versions), drive cleanup directly.
+    if (res.writableEnded || res.destroyed) closeStack()
   }
 }

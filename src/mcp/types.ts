@@ -42,7 +42,7 @@ export const GetResultSchema = z.object({
 })
 
 export const RecentInputSchema = z.object({
-  since: z.string().optional().describe('ISO 8601 timestamp; only events at or after'),
+  since: z.iso.datetime().optional().describe('ISO 8601 timestamp; only events at or after'),
   limit: z.number().int().min(1).max(100).default(20),
 })
 

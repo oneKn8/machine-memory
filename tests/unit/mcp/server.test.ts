@@ -106,6 +106,20 @@ describe('createMcpServer', () => {
     expect(captured).toEqual({ since: '2026-04-19T00:00:00Z', limit: 7 })
   })
 
+  it('mm_recent rejects a non-ISO since string at the schema boundary', async () => {
+    let daemonCalled = false
+    const daemon = stubClient(async () => { daemonCalled = true; return [] })
+    const server = createMcpServer({ daemon })
+    await server.connect(serverTransport)
+    await client.connect(clientTransport)
+    const res = await client.callTool({ name: 'mm_recent', arguments: { since: 'not-a-date' } })
+    expect(res.isError).toBe(true)
+    const text = (res.content as Array<{ type: string; text?: string }>).find(c => c.type === 'text')
+    expect(text?.text ?? '').toMatch(/invalid.*(iso|datetime)/i)
+    // The schema must reject before the daemon is called.
+    expect(daemonCalled).toBe(false)
+  })
+
   it('emits properly percent-encoded file:// URIs for paths with special chars', async () => {
     const tricky: SearchResult[] = [
       {

@@ -12,7 +12,10 @@ function tmpDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))
 }
 
-function rpc(socketPath: string, method: string, params: unknown): Promise<DaemonResponse> {
+function connectAndReadFirst(
+  socketPath: string,
+  write: (client: net.Socket) => void,
+): Promise<DaemonResponse> {
   return new Promise((resolve, reject) => {
     const client = net.createConnection(socketPath)
     const decoder = new MessageDecoder()
@@ -29,32 +32,19 @@ function rpc(socketPath: string, method: string, params: unknown): Promise<Daemo
       }
     })
     client.on('error', reject)
-    client.on('connect', () => {
-      client.write(encodeMessage({ id: 'rpc-1', method, params }))
-    })
+    client.on('connect', () => write(client))
+  })
+}
+
+function rpc(socketPath: string, method: string, params: unknown): Promise<DaemonResponse> {
+  return connectAndReadFirst(socketPath, client => {
+    client.write(encodeMessage({ id: 'rpc-1', method, params }))
   })
 }
 
 function rpcRaw(socketPath: string, line: string): Promise<DaemonResponse> {
-  return new Promise((resolve, reject) => {
-    const client = net.createConnection(socketPath)
-    const decoder = new MessageDecoder()
-    client.setEncoding('utf8')
-    client.on('data', chunk => {
-      try {
-        const messages = decoder.push(chunk as string) as DaemonResponse[]
-        if (messages.length > 0) {
-          client.end()
-          resolve(messages[0]!)
-        }
-      } catch (err) {
-        reject(err)
-      }
-    })
-    client.on('error', reject)
-    client.on('connect', () => {
-      client.write(line)
-    })
+  return connectAndReadFirst(socketPath, client => {
+    client.write(line)
   })
 }
 

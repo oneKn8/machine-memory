@@ -76,8 +76,15 @@ describe('mmd-mcp stdio bridge', () => {
     })
     const stderr: string[] = []
     child.stderr?.on('data', chunk => stderr.push(String(chunk)))
-    const exitCode = await new Promise<number>(resolve => {
-      child.on('exit', code => resolve(code ?? -1))
+    const exitCode = await new Promise<number>((resolve, reject) => {
+      const killer = setTimeout(() => {
+        child.kill('SIGKILL')
+        reject(new Error('mmd-mcp did not exit within 3s; killed'))
+      }, 3000)
+      child.on('exit', code => {
+        clearTimeout(killer)
+        resolve(code ?? -1)
+      })
     })
     expect(exitCode).toBe(1)
     expect(stderr.join('')).toMatch(/daemon not running/i)

@@ -122,4 +122,42 @@ describe('mmd HTTP MCP transport', () => {
       socket.on('error', reject)
     })
   })
+
+  it('survives an early client disconnect mid-request without unhandled rejections', async () => {
+    // Deterministic proof of the race is hard — per-request transport and
+    // server instances live inside the http handler closure. This test fires
+    // several aborted POSTs to exercise the early-close codepath. If the
+    // cleanup listener were still in the `finally` block, an unhandled
+    // rejection from the un-closed transport would surface on the process.
+    const url = fs.readFileSync(getMcpUrlPath(), 'utf8').trim()
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown): void => { unhandled.push(err) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      for (let i = 0; i < 5; i++) {
+        const ac = new AbortController()
+        const reqPromise = fetch(url, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: i, method: 'tools/list', params: {} }),
+          signal: ac.signal,
+        }).catch(() => undefined)
+        // Abort immediately so the request ends before handleRequest settles.
+        ac.abort()
+        await reqPromise
+      }
+      // Give any late rejections a tick to land.
+      await new Promise(r => setTimeout(r, 50))
+      expect(unhandled).toEqual([])
+
+      // And the daemon is still healthy for new requests.
+      client = new Client({ name: 'early-disconnect', version: '0.0.0' })
+      const transport = new StreamableHTTPClientTransport(new URL(url))
+      await client.connect(transport)
+      const tools = await client.listTools()
+      expect(tools.tools.map(t => t.name).sort()).toEqual(['mm_find', 'mm_get', 'mm_recent'])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
 })

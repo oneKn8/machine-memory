@@ -17,8 +17,9 @@ async function main(): Promise<void> {
       call<R>(socketPath, method, params),
   }
   const server = createMcpServer({ daemon })
-  const transport = new StdioServerTransport()
-  await server.connect(transport)
+  // Register signal handlers BEFORE awaiting connect. A SIGTERM/SIGINT
+  // arriving during the await would otherwise hit Node's default handler
+  // and skip our shutdown closure entirely.
   let shuttingDown = false
   const shutdown = async (sig: string): Promise<void> => {
     if (shuttingDown) return
@@ -29,6 +30,8 @@ async function main(): Promise<void> {
   }
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
   process.on('SIGINT', () => void shutdown('SIGINT'))
+  const transport = new StdioServerTransport()
+  await server.connect(transport)
 }
 
 void main().catch(err => {
