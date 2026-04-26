@@ -56,6 +56,10 @@ describe('daemon roundtrip', () => {
 
   beforeEach(async () => {
     dir = tmpDir('mm-daemon-')
+    // Pin MM_DATA_DIR to the per-test tmp dir so createServer's MCP discovery
+    // file lands inside the sandbox; otherwise the suite writes mcp.url under
+    // the runner's real ~/.local/share/machine-memory and races any live mmd.
+    process.env.MM_DATA_DIR = dir
     socketPath = path.join(dir, 'mmd.sock')
     dbPath = path.join(dir, 'test.sqlite')
     const db = openDatabase(dbPath)
@@ -69,6 +73,7 @@ describe('daemon roundtrip', () => {
 
   afterEach(async () => {
     await server.close()
+    delete process.env.MM_DATA_DIR
     fs.rmSync(dir, { recursive: true, force: true })
   })
 

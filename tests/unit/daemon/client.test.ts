@@ -15,6 +15,10 @@ describe('daemon client', () => {
 
   beforeEach(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mm-client-'))
+    // Pin MM_DATA_DIR to the per-test tmp dir so createServer's MCP discovery
+    // file (`mcp.url`) lands inside the sandbox instead of clobbering the real
+    // ~/.local/share/machine-memory of whoever runs the suite.
+    process.env.MM_DATA_DIR = dir
     socketPath = path.join(dir, 'mmd.sock')
     dbPath = path.join(dir, 'test.sqlite')
     server = null
@@ -24,6 +28,7 @@ describe('daemon client', () => {
   afterEach(async () => {
     if (server) await server.close()
     if (rawServer) await new Promise<void>(resolve => rawServer!.close(() => resolve()))
+    delete process.env.MM_DATA_DIR
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
