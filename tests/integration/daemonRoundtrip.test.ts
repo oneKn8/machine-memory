@@ -12,7 +12,10 @@ function tmpDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix))
 }
 
-function rpc(socketPath: string, method: string, params: unknown): Promise<DaemonResponse> {
+function connectAndReadFirst(
+  socketPath: string,
+  write: (client: net.Socket) => void,
+): Promise<DaemonResponse> {
   return new Promise((resolve, reject) => {
     const client = net.createConnection(socketPath)
     const decoder = new MessageDecoder()
@@ -29,9 +32,19 @@ function rpc(socketPath: string, method: string, params: unknown): Promise<Daemo
       }
     })
     client.on('error', reject)
-    client.on('connect', () => {
-      client.write(encodeMessage({ id: 'rpc-1', method, params }))
-    })
+    client.on('connect', () => write(client))
+  })
+}
+
+function rpc(socketPath: string, method: string, params: unknown): Promise<DaemonResponse> {
+  return connectAndReadFirst(socketPath, client => {
+    client.write(encodeMessage({ id: 'rpc-1', method, params }))
+  })
+}
+
+function rpcRaw(socketPath: string, line: string): Promise<DaemonResponse> {
+  return connectAndReadFirst(socketPath, client => {
+    client.write(line)
   })
 }
 
@@ -43,6 +56,10 @@ describe('daemon roundtrip', () => {
 
   beforeEach(async () => {
     dir = tmpDir('mm-daemon-')
+    // Pin MM_DATA_DIR to the per-test tmp dir so createServer's MCP discovery
+    // file lands inside the sandbox; otherwise the suite writes mcp.url under
+    // the runner's real ~/.local/share/machine-memory and races any live mmd.
+    process.env.MM_DATA_DIR = dir
     socketPath = path.join(dir, 'mmd.sock')
     dbPath = path.join(dir, 'test.sqlite')
     const db = openDatabase(dbPath)
@@ -56,6 +73,7 @@ describe('daemon roundtrip', () => {
 
   afterEach(async () => {
     await server.close()
+    delete process.env.MM_DATA_DIR
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
@@ -75,6 +93,19 @@ describe('daemon roundtrip', () => {
   it('returns an error envelope for unknown methods', async () => {
     const res = await rpc(socketPath, 'mm_nonexistent', {})
     expect(res.error).toMatchObject({ code: -32601 })
+  })
+
+  it('mm_get returns null result envelope for unknown id', async () => {
+    const res = await rpc(socketPath, 'mm_get', { id: 'definitely-not-a-real-id' })
+    expect(res.error).toBeUndefined()
+    expect(res.result).toBeNull()
+  })
+
+  it('rejects requests whose id is not a string', async () => {
+    const malformed = JSON.stringify({ id: 123, method: '_ping', params: {} }) + '\n'
+    const res = await rpcRaw(socketPath, malformed)
+    expect(res.error).toMatchObject({ code: -32600 })
+    expect(res.id).toBeNull()
   })
 
   it('removes a stale socket file on startup', async () => {

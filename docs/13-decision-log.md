@@ -312,3 +312,40 @@ How this is applied:
 
 - detection is read-only — `init` lists what it found, then asks per tool
 - if no agents are present (or all are declined), the daemon still runs and is reachable via `mm` CLI; MCP registration is additive, not required for the product to work
+
+## D-023: Ship MCP over both stdio and HTTP
+
+Decision:
+
+- The daemon's MCP surface is exposed via TWO transports in Slice 2: a stdio bridge (`mmd-mcp` bin) and an HTTP listener inside `mmd` itself. Both mount the same `createMcpServer({daemon})` factory so tool definitions cannot drift.
+
+Reason:
+
+- Different MCP-speaking agents prefer different transports. Claude Desktop today is stdio-only. Newer/web-hosted clients prefer HTTP. Shipping both means Slice 4's installer can register either depending on what each detected agent supports, instead of forcing a transport choice at install time.
+- Both transports were already implementable on top of the existing daemon shape: the stdio bridge spawns per session and proxies via the existing NDJSON client; HTTP runs inside the daemon process via the SDK's StreamableHTTPServerTransport in stateless mode (one transport+server per request, per the SDK's documented pattern). The marginal complexity is a single shared factory plus two thin wiring files.
+- The Unix socket NDJSON protocol stays as the daemon's internal IPC for the human CLI. MCP is the agent-facing layer. Keeping the layers distinct means we can swap or extend MCP transports later without touching `mm find`/`mm show`.
+
+How this is applied:
+
+- `src/mcp/server.ts` is the single source of truth for tool schemas and handlers.
+- `src/mcp/stdio.ts` (bin: `mmd-mcp`) connects it to a `StdioServerTransport`. `src/mcp/http.ts` connects it to a `StreamableHTTPServerTransport` mounted inside the daemon.
+- Slice 4 will register either transport with detected agent tools per D-022 (prompt-per-agent).
+
+## D-024: HTTP MCP listens on loopback only; no token auth in v1
+
+Decision:
+
+- The HTTP MCP listener inside `mmd` binds to `127.0.0.1` exclusively (via Node's `host: '127.0.0.1'`) and uses no authentication.
+- The OS picks the port; the actual URL is written to `~/.local/share/machine-memory/mcp.url` on startup and removed on shutdown.
+
+Reason:
+
+- Local-first per D-002: anything reachable from loopback already has the same trust the user gave their other local programs (e.g., editors, shells). The Unix socket is `0600`; HTTP loopback is the network-layer equivalent of that trust.
+- Adding token auth at v1 would be security theater without a threat model. The real threat (network exposure) is closed by binding to 127.0.0.1.
+- OS-picked port + discovery file means no port conflicts and no manual configuration. The discovery file is in the same XDG data dir as the database and the pid file; same trust boundary.
+
+How this is applied:
+
+- `src/mcp/http.ts` hard-codes `host: '127.0.0.1'`. Any change to this requires a follow-up D-NNN entry and an explicit user-facing config flag, because it changes the threat model.
+- `mm doctor` (Slice 4 will extend it) will report the discovery file path and the bound URL so users can verify what's listening.
+- If a future user wants remote access, they can run an SSH tunnel or a reverse proxy with their own auth — that's a deliberate decision, not a default.

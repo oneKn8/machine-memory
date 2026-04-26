@@ -5,13 +5,15 @@
   "description": "Local-first machine search and memory engine",
   "type": "module",
   "bin": {
-    "mm":  "./dist/cli/main.js",
-    "mmd": "./dist/daemon/server.js"
+    "mm": "./dist/cli/main.js",
+    "mmd": "./dist/daemon/server.js",
+    "mmd-mcp": "./dist/mcp/stdio.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/cli/main.ts",
     "daemon": "tsx src/daemon/server.ts",
+    "mcp": "tsx src/mcp/stdio.ts",
     "scan": "tsx src/cli/main.ts scan",
     "find": "tsx src/cli/main.ts find",
     "doctor": "tsx src/cli/main.ts doctor",
@@ -20,9 +22,11 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^11.10.0",
     "commander": "^14.0.1",
-    "fast-glob": "^3.3.3"
+    "fast-glob": "^3.3.3",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
@@ -32,4 +36,3 @@
     "vitest": "^3.2.4"
   }
 }
-
