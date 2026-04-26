@@ -70,7 +70,7 @@ Tier R3 — defer until there is real demand:
 
 ## 4. Schema
 
-Two tables, both in the existing `mmd.db` SQLite file.
+Two tables, both in the existing daemon SQLite file at `~/.local/share/machine-memory/machine-memory.sqlite` (default per `src/config/defaults.ts`).
 
 ```sql
 CREATE TABLE ref_sources (
@@ -87,8 +87,8 @@ CREATE TABLE refs (
   source_id       INTEGER NOT NULL REFERENCES ref_sources(id) ON DELETE CASCADE,
   field           TEXT NOT NULL,         -- 'ExecStart' | 'WorkingDirectory' | 'value' | 'Exec' | 'alias:undertone' | 'PATH' | etc.
   raw_value       TEXT NOT NULL,         -- the unexpanded string as it appears in the source
-  target_path     TEXT NOT NULL,         -- expanded, absolute, normalized; populated when we can resolve it
-  target_exists   INTEGER NOT NULL,      -- 0/1 cached at last validation
+  target_path     TEXT NOT NULL,         -- expanded, absolute, normalized; required for every row
+  target_exists   INTEGER NOT NULL,      -- 0/1 cached at last validation; 0 is a *broken* ref, not an unresolved one
   last_checked_at INTEGER NOT NULL,
   line            INTEGER,               -- line number in the source file when applicable
   notes           TEXT                   -- e.g. 'ExecStart first token only', 'PATH entry 3 of 7'
@@ -104,7 +104,8 @@ Normalization rules for `target_path` so reverse lookup actually works:
 - Resolve `~`, `$HOME`, and `${HOME}` against the daemon's owning user.
 - Resolve `file://` URI-encoded paths.
 - For `PATH`-like colon-separated lists, emit one row per entry.
-- For `ExecStart=cmd arg arg`, store the first token (the executable) as the primary `target_path`; if subsequent tokens are absolute paths that exist on disk, emit additional rows with `field='ExecStart:arg<n>'`.
+- For `ExecStart=cmd arg arg`, store the first token (the executable) as the primary `target_path`; emit additional rows with `field='ExecStart:arg<n>'` for any subsequent token that *parses* as a syntactically absolute path (starts with `/` or expands from `~`/`$HOME`), regardless of whether it currently exists on disk. Existence is what `target_exists` captures during validation — filtering at scan time would suppress exactly the broken refs `mm_refs_broken` is meant to surface after a reorg.
+- Refs that cannot be resolved at all (e.g. an `Exec=$MY_VAR/foo` where `$MY_VAR` is not in the parser's environment) are dropped at scan time and logged as known false negatives, not stored with a sentinel. The schema's `NOT NULL` invariant is intentional: every row in `refs` is a concrete path the daemon can `stat`.
 - Do not follow symlinks during normalization. Store the literal path the config writes; resolve symlinks only at validation time. Otherwise a symlink swap silently changes what every reference "means."
 
 ---
@@ -114,7 +115,7 @@ Normalization rules for `target_path` so reverse lookup actually works:
 Two triggers:
 
 1. **On scan.** When a `ref_sources` row is inserted or refreshed, every emitted `refs.target_path` is `stat`-checked. `target_exists` is set, `last_checked_at` is updated.
-2. **On filesystem event from the watcher.** When the daemon's existing inotify pipeline reports a `MOVED_FROM` or `DELETE` for path `P`, run `SELECT id FROM refs WHERE target_path = P` and re-validate each. On a `MOVED_TO` to `Q` paired with the same cookie, mark the affected refs as broken and store `Q` as a candidate fix in a separate `ref_fix_candidates` column (added later — out of scope for this slice).
+2. **On filesystem event from the watcher.** When the daemon's existing inotify pipeline reports a `MOVED_FROM` or `DELETE` for path `P`, re-validate every ref `P` could affect — both an exact match on `P` (a single file moved) and any descendant of `P` (a directory moved or deleted, taking child refs with it). The query is the OR of two conditions: `target_path = ?` and `target_path LIKE ? || '/%'`, each given a normalized `P` (no trailing slash, symlinks unresolved to match scan-time storage). Fix-candidate suggestion when a paired `MOVED_TO` to `Q` is observed is out of scope for this slice — we only flag brokenness here, and a separate slice can add cookie-paired suggestions backed by the existing FTS5 + content-hash index (see §9).
 
 The validation loop is cheap. A `stat` per ref, batched, is microseconds. The watcher already has the events; this is one extra SQL query per relevant event.
 
@@ -132,7 +133,7 @@ Input:
 { "path": "/home/oneknight/Pictures/wallpapers/glacier.jpg" }
 ```
 
-Returns every reference whose `target_path` equals the input *or whose `target_path` is a prefix of the input* (so asking about a directory surfaces refs to files inside it).
+Returns every reference whose `target_path` equals the input *or whose `target_path` has the input as a prefix* (so asking about a directory surfaces refs to files inside it). Concretely, the SQL is `WHERE target_path = ? OR target_path LIKE ? || '/%'` with both placeholders bound to the normalized input. The opposite direction — refs that point at a *parent* of the input — is not what reorg preflight needs and is intentionally not exposed by this tool.
 
 ```json
 {
