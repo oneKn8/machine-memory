@@ -123,6 +123,53 @@ describe('mmd HTTP MCP transport', () => {
     })
   })
 
+  it('shuts down within 500ms even with an idle TCP client holding the port open', async () => {
+    // close() on a plain http.Server waits for accepted sockets to finish on
+    // their own. A keepalive client (or a stuck POST) blocks forever. The
+    // daemon must force-close all connections so SIGTERM-driven shutdown does
+    // not turn into SIGKILL with stale mcp.url + socket files left behind.
+    const url = fs.readFileSync(getMcpUrlPath(), 'utf8').trim()
+    const port = Number(new URL(url).port)
+    const { default: net } = await import('node:net')
+    const idle = await new Promise<InstanceType<typeof net.Socket>>((resolve, reject) => {
+      const socket = net.createConnection({ host: '127.0.0.1', port }, () => resolve(socket))
+      socket.once('error', reject)
+    })
+    try {
+      const start = Date.now()
+      await Promise.race([
+        daemon!.close(),
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error('daemon.close() did not return within 500 ms')), 500),
+        ),
+      ])
+      expect(Date.now() - start).toBeLessThan(500)
+      daemon = null
+    } finally {
+      idle.destroy()
+    }
+  })
+
+  it('creates the discovery file parent directory if it does not exist', async () => {
+    // Simulates a freshly-cloned machine where ~/.local/share/machine-memory
+    // has never been created. createServer must not throw ENOENT trying to
+    // write mcp.url; startMcpHttp owns mkdir-ing the parent.
+    await daemon!.close()
+    daemon = null
+
+    const freshDataDir = path.join(dir, 'never-existed-before')
+    expect(fs.existsSync(freshDataDir)).toBe(false)
+    process.env.MM_DATA_DIR = freshDataDir
+
+    daemon = await createServer({
+      socketPath: path.join(freshDataDir, 'mmd.sock'),
+      pidPath: path.join(freshDataDir, 'mmd.pid'),
+      dbPath: path.join(freshDataDir, 'machine-memory.sqlite'),
+    })
+
+    expect(fs.existsSync(path.join(freshDataDir, 'mcp.url'))).toBe(true)
+  })
+
   it('survives an early client disconnect mid-request without unhandled rejections', async () => {
     // Deterministic proof of the race is hard — per-request transport and
     // server instances live inside the http handler closure. This test fires

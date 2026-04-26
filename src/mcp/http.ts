@@ -1,5 +1,6 @@
 import http from 'node:http'
 import fs from 'node:fs'
+import path from 'node:path'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { createMcpServer, type DaemonClient } from './server.js'
 
@@ -51,12 +52,18 @@ export async function startMcpHttp(opts: StartHttpOptions): Promise<HttpListener
       void handlePost(req, res, opts.daemon)
     })
 
+    // Ensure the discovery file's parent exists. With the default data dir
+    // (`~/.local/share/machine-memory`) this is created by the installer, but
+    // tests pass custom paths and a freshly-cloned machine has nothing on disk
+    // yet — without this mkdir, startMcpHttp throws ENOENT and the daemon
+    // refuses to start with a confusing message.
+    fs.mkdirSync(path.dirname(opts.urlPath), { recursive: true })
     fs.writeFileSync(opts.urlPath, `${url}\n`)
   } catch (cause) {
     // Anything that throws after the bind must close the listener; otherwise
     // serverCore's teardownPartial has no handle to it and the loopback port
     // stays bound, answering 405 for the rest of the process lifetime.
-    await new Promise<void>(resolve => httpServer.close(() => resolve()))
+    await closeHttpServer(httpServer)
     throw cause
   }
 
@@ -68,9 +75,20 @@ export async function startMcpHttp(opts: StartHttpOptions): Promise<HttpListener
       } catch {
         /* ignore */
       }
-      await new Promise<void>(resolve => httpServer.close(() => resolve()))
+      await closeHttpServer(httpServer)
     },
   }
+}
+
+async function closeHttpServer(httpServer: http.Server): Promise<void> {
+  // close() alone waits for every accepted socket to close on its own, which
+  // means an idle keepalive client (or a stuck POST) blocks shutdown until
+  // SIGKILL — at which point the daemon skips its cleanup path and leaves
+  // stale mcp.url / socket files behind. Force idle and active sockets shut
+  // immediately so close()'s callback fires promptly.
+  httpServer.closeIdleConnections()
+  httpServer.closeAllConnections()
+  await new Promise<void>(resolve => httpServer.close(() => resolve()))
 }
 
 async function handlePost(
