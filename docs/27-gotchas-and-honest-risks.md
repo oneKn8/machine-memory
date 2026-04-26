@@ -114,7 +114,7 @@ Severity is about *project survival*, not engineering effort. A High-severity go
 
 **Mitigation.**
 
-1. Add a D-020 entry to `docs/13-decision-log.md` recording why Phase 1.5 was inserted (the 2026-04-25 reorg-break trio).
+1. Add a new decision-log entry recording why Phase 1.5 was inserted (the 2026-04-25 reorg-break trio). At time of writing, `docs/13-decision-log.md` ends at D-022 on `main`, and PR #2 adds D-023 + D-024 — so this should land as **D-025** (or whichever slot is next free when the entry actually goes in; check the log first).
 2. Update `docs/06-roadmap-phases.md` to slot Phase 1.5 in.
 3. Update `docs/23-product-v2-architecture.md` §3 (System Shape) to note that the daemon's index tier list now includes a refs tier.
 4. Cross-link `docs/26` from each of the above so future readers can find the spec from any entry point.
@@ -203,15 +203,15 @@ Severity is about *project survival*, not engineering effort. A High-severity go
 
 ### P-2. The phase-collapse pivot (D-019) left some orphaned content
 
-**Trap.** `docs/06-roadmap-phases.md` was written in the original 6-phase framing. `docs/23` collapsed those into 5 layers. Doc 06 has not been retroactively rewritten to match 23. New readers find both docs and have to reconcile them.
+**Trap.** `docs/06-roadmap-phases.md` was originally written in a 6-phase framing. `docs/23` collapsed those into 5 layers. Doc 06's structural framing has since been rewritten — it now opens with "phases are layers of one product" and points at doc 23 as canonical, and the phase numbering matches doc 23 (Phase 0 through Phase 5). The residual risk is at the prose level, not the structural level: individual phase descriptions in `docs/06` may still carry sentences inherited from the older draft that contradict doc 23 in detail.
 
-**Why it's hard to see.** Both docs are internally consistent. The mismatch is structural.
+**Why it's hard to see.** The opening paragraph reads as fully reconciled, so a quick skim suggests the rewrite is done. The drift, if any, is in section bodies.
 
-**Detect.** When someone reads `06`, then reads `23`, then asks "wait, are there 6 phases or 5?"
+**Detect.** Diff `docs/06`'s per-phase descriptions against the corresponding sections of `docs/23`. Anywhere they disagree on what a phase ships, doc 23 is the authority (per its own opening, and per D-019).
 
-**Mitigation.** Either rewrite `docs/06` to match the v2 layer framing (preserving original numbering as historical context in an appendix), or add a prominent "SUPERSEDED — see docs/23" banner at the top of `docs/06`. The current state assumes the reader will discover D-019 in the decision log on their own. Most won't.
+**Mitigation.** When touching `docs/06` for any reason, audit each phase section against `docs/23` and reconcile. No banner is needed — the doc already names doc 23 as canonical. Don't undertake a full rewrite as standalone work; piggyback the cleanup onto whichever phase next updates the doc.
 
-**Severity:** Medium. Coherent documentation is the difference between a project a future contributor can pick up and one they bounce off.
+**Severity:** Low. Downgraded from Medium after verifying the structural framing has been rewritten. Stays at Low while no concrete drift is identified; raise to Medium if a contributor hits an actual contradiction.
 
 ---
 
@@ -254,7 +254,7 @@ The entries here are *durable structural risks* — things that don't get fixed 
 
 This doc was written 2026-04-25 after a full audit of the phase plan against `docs/01, 06, 13, 15, 22, 23`. The audit conclusions:
 
-- **Plan is structurally sound** with three cleanups owed (G-5, P-1, P-2 above).
+- **Plan is structurally sound** with two cleanups owed (G-5 and P-1 above). P-2 was downgraded to Low after verifying `docs/06` already carries the v2 layered framing.
 - **Phase 1 + 1.5 are the two layers most likely to be useful.**
 - **Phase 3 + 4 are the two layers most at risk of being engineered for their own sake.**
 - **Phase 5 is premature** until external Linux adoption demands it.
