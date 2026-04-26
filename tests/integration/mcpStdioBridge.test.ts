@@ -40,8 +40,12 @@ describe('mmd-mcp stdio bridge', () => {
   it('lists tools and serves mm_find via the bridge over stdio', async () => {
     const bridgeScript = path.resolve('dist/mcp/stdio.js')
     if (!fs.existsSync(bridgeScript)) {
-      console.warn('skipping: dist/mcp/stdio.js not present — run npm run build first')
-      return
+      // Hard fail rather than silent skip: a clean checkout that runs `npm
+      // test` should not be able to claim transport coverage without actually
+      // exercising the bridge. CI in particular must run the build step first.
+      throw new Error(
+        `mmd-mcp bridge not built at ${bridgeScript} — run \`npm run build\` before \`npm test\``,
+      )
     }
     client = new Client({ name: 'integration-test', version: '0.0.0' })
     const transport = new StdioClientTransport({
@@ -66,8 +70,12 @@ describe('mmd-mcp stdio bridge', () => {
 
     const bridgeScript = path.resolve('dist/mcp/stdio.js')
     if (!fs.existsSync(bridgeScript)) {
-      console.warn('skipping: dist/mcp/stdio.js not present — run npm run build first')
-      return
+      // Hard fail rather than silent skip: a clean checkout that runs `npm
+      // test` should not be able to claim transport coverage without actually
+      // exercising the bridge. CI in particular must run the build step first.
+      throw new Error(
+        `mmd-mcp bridge not built at ${bridgeScript} — run \`npm run build\` before \`npm test\``,
+      )
     }
     const { spawn } = await import('node:child_process')
     const child = spawn(process.execPath, [bridgeScript], {
