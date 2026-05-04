@@ -57,7 +57,14 @@ describe('mm daemon status', () => {
 
   it('detached start errors when serverScript is missing', async () => {
     // Under tsx, import.meta.url points at src/cli/commands/daemon.ts, so the
-    // resolved server.js path under src/daemon/ does not exist.
+    // resolved server.js path under src/daemon/ does not exist — UNLESS a
+    // prior crashed run of the sibling "socket already taken" test left its
+    // stub at src/daemon/server.js on disk (the stub is created in a
+    // try/finally; a vitest crash before finally strands it). Pre-clean
+    // here so this test asserts what it claims regardless of prior state.
+    const stubPath = path.resolve(process.cwd(), 'src/daemon/server.js')
+    if (fs.existsSync(stubPath)) fs.unlinkSync(stubPath)
+
     await runDaemonStart({})
     expect(process.exitCode).toBe(1)
     expect(logs.join('\n')).toMatch(/cannot find server script/i)
