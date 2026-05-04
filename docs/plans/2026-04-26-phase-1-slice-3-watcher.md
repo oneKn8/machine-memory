@@ -287,8 +287,47 @@ Compressing 2–5 into a generic "reverse-order teardown" is the failure mode: S
 - Modify: `src/index/db.ts` to call `runMigrations(db)` at startup, after `SCHEMA_SQL` runs.
 - Modify: `src/scanner/fileScanner.ts` to populate `inode` + `device` on insert/upsert (cheap — already in `stat`).
 - Modify: `src/daemon/watcherQueue.ts` (rename pairing logic + atomic-rename detection).
-- Modify: writer queue's apply-batch to handle delete + rename.
-- New tests for: migration idempotence, rename via inode pairing, atomic-rename-as-change, hard-delete with grace.
+- Modify: writer queue's apply-batch to handle delete + rename (id migration when path changes).
+- New tests for: migration idempotence, rename via inode pairing, atomic-rename-as-change, hard-delete with grace, rename does not orphan text_blobs/FTS rows.
+
+**Identity strategy on rename — load-bearing decision.** Today `id = sha1(path)` (`fileScanner.ts:88` — `stableId(filePath)`), and `text_blobs.source_id`, `text_blobs_fts.source_id`, and any future sidecar table key off that id. A naive `UPDATE file_records SET path = newPath` while keeping the old id breaks two ways:
+
+1. A new file later created at `oldPath` will compute `id = sha1(oldPath)`, which now collides with the renamed row's still-old id → PRIMARY KEY violation on insert.
+2. The renamed row's id no longer reflects its path, breaking the implicit invariant that `id == sha1(path)` that any future code might rely on.
+
+**Chosen strategy:** on rename, compute `newId = sha1(newPath)` and migrate the id across **every dependent table** atomically inside the writer-queue transaction. Concretely (single transaction):
+```sql
+UPDATE file_records   SET id = :newId, path = :newPath, inode = :newIno, device = :newDev WHERE id = :oldId;
+UPDATE text_blobs     SET source_id = :newId WHERE source_id = :oldId AND source_type = 'file';
+DELETE FROM text_blobs_fts WHERE source_id = :oldId AND source_type = 'file';
+INSERT INTO text_blobs_fts (source_id, source_type, extractor_type, content)
+  SELECT source_id, source_type, extractor_type, content FROM text_blobs
+  WHERE source_id = :newId AND source_type = 'file';
+```
+The FTS5 virtual table cannot be `UPDATE`d in place (it's a contentless mirror that's append/delete only — see `textBlobs.ts:51-80` upsert pattern), so the rename re-emits the FTS rows with the new id. Cost: O(blobs-per-file), bounded by the extractor count (today: 1 per file). Justified: a rename happens on user action, not in a tight loop.
+
+The alternative was to decouple `id` from `path` entirely (UUID or content-hash), but that's a Phase-2-scale schema change and not justifiable for one slice. The chosen strategy preserves today's `id == sha1(path)` invariant after rename completes.
+
+**Delete strategy.** Hard-delete on `unlink` must clean **three** tables in one transaction:
+```sql
+DELETE FROM text_blobs_fts WHERE source_id = :oldId AND source_type = 'file';
+DELETE FROM text_blobs     WHERE source_id = :oldId AND source_type = 'file';
+DELETE FROM file_records   WHERE id = :oldId;
+```
+Order matters only for log clarity (children before parent); SQLite has no FK enforcement on this schema today. Test asserts that after delete: `mm_find` returns no rows for the deleted path AND a direct `SELECT FROM text_blobs_fts WHERE source_id = :oldId` returns zero rows (catches FTS leaks).
+
+**Event-ordering decision table.** The combination of per-path debounce, atomic-rename collapse, and inode pairing is non-obvious; this table is the source of truth.
+
+| Sequence (single path P, then Q) | Component that handles it | Resolves to | Why |
+|---|---|---|---|
+| `change(P)` × N within debounce window | Debouncer | Single `change(P)` job | Per-path coalesce, latest event wins |
+| `unlink(P) → add(P)` within 250 ms (atomic-rename save) | watcherQueue pairing **before** debounce flush | Single `change(P)` job | Editor save pattern; preserves row identity |
+| `unlink(P) → add(Q)` within 1 s, `(ino,dev)` matches | watcherQueue inode pairing **after** debounce flush | Single rename job (`updatePath P→Q + migrate id`) | True rename across paths |
+| `unlink(P) → add(Q)` within 1 s, `(ino,dev)` differs | Debouncer + watcherQueue | Two jobs: `delete(P)` then `add(Q)` | Different inodes → different physical files |
+| `unlink(P)` with no `add` within 1 s grace | watcherQueue | `delete(P)` job after grace expiry | Plain delete |
+| `unlink(P) → add(Q)`, P's stored inode is NULL (pre-existing row) | Fallback | Two jobs: `delete(P)` then `add(Q)` | No inode means no pairing key; self-heals on next event |
+
+**Resolution order (per path event arrival):** debouncer per-path coalesce → atomic-rename-as-change check → inode-paired rename check → grace-expiry plain delete. Run the cheaper checks first; only fall through to inode lookup if no earlier rule applies.
 
 **Step 1: Migration helper + schema columns.**
 1. Add `runMigrations(db: Database)` that reads `PRAGMA user_version`, runs each registered migration whose version is greater than the stored value, then sets `PRAGMA user_version = N` (the new max). Idempotent.
@@ -298,19 +337,21 @@ Compressing 2–5 into a generic "reverse-order teardown" is the failure mode: S
 
 **Step 2: Scanner + watcher populate inode/device.** Wherever a `file_records` row is upserted today, include `stat.ino` (cast to integer, since `ino` may be a `BigInt` on some platforms — coerce safely) and `stat.dev`. Backfill happens organically: any file the watcher or scanner touches gets its inode populated. Pre-existing rows whose path is never touched again retain `inode = NULL` — the rename-pairing fallback path covers this case (Step 3).
 
-**Step 3: Rename + delete logic in `watcherQueue.ts`.**
-- **Atomic-rename-as-change first.** When the latest event for path P is `unlink` and a fresh `add` arrives for the SAME path P within a 250 ms grace, collapse to a single `change(P)` job. This is the editor-save case and is the most common shape; handle it before any inode lookup.
-- **Inode-paired rename.** When `unlink(P)` arrives (and is not collapsed by the atomic-rename rule above), look up the current `(inode, device)` from the DB row for P. Mark the row "pending deletion" with a 1 s grace. If an `add(Q)` arrives within the grace AND `(stat.ino, stat.dev)` from `Q` matches the held `(inode, device)`, treat it as a rename: update the row's `path` to `Q` (and refresh `inode`/`device` if they changed — they shouldn't on a same-FS rename), cancel the deletion.
-- **Fallback for NULL inode (pre-existing rows + ino-less filesystems).** If the held inode is NULL, skip pairing — treat as plain delete-then-add. Document in validation doc as a known limitation: pre-existing rows that are renamed on a daemon's first run won't pair. Acceptable because (a) it self-heals on the next watcher event for either path, and (b) most users rename files, not pre-existing-from-a-stale-index files.
-- **Grace expiry.** If 1 s passes with no matching `add`, hard-delete the row + text blobs in the next writer drain. (Hard-delete vs tombstone choice still per the out-of-scope section.)
+**Step 3: Rename + delete logic in `watcherQueue.ts`.** Apply the rules from the decision table above in this order:
+- **Atomic-rename-as-change.** When the latest event for path P is `unlink` and a fresh `add` arrives for the SAME path P within a 250 ms grace, collapse to a single `change(P)` job. The id stays the same (path didn't change), only content changed → no sidecar migration needed. Editor-save case; handle before any inode lookup.
+- **Inode-paired rename.** When `unlink(P)` arrives (and is not collapsed by the atomic-rename rule), look up the current `(inode, device)` from the DB row for P. Mark the row "pending deletion" with a 1 s grace. If an `add(Q)` arrives within the grace AND `(stat.ino, stat.dev)` from `Q` matches the held `(inode, device)`, treat it as a rename: emit a single rename job that runs the **id-migration SQL block** above (UPDATE file_records id+path, UPDATE text_blobs.source_id, DELETE+INSERT text_blobs_fts). All inside one writer-queue transaction; cancel the deletion.
+- **Fallback for NULL inode (pre-existing rows + ino-less filesystems).** If the held inode is NULL, skip pairing — treat as plain `delete(P)` then `add(Q)`. Document in validation doc as a known limitation: pre-existing rows that are renamed on a daemon's first run won't pair. Acceptable because (a) it self-heals on the next watcher event for either path, and (b) most users rename files, not pre-existing-from-a-stale-index files.
+- **Grace expiry.** If 1 s passes with no matching `add`, run the **delete SQL block** above (text_blobs_fts → text_blobs → file_records, all in one transaction) in the next writer drain.
 
 **Step 4: Hard-delete read-race.** `mm_get` reads from the DB only and never `fs.read`s the underlying path; assert this in a test (mock `fs.readFileSync` and confirm `mm_get` does not call it). With this assertion, the worst stale-row case is "agent receives a row whose underlying file was deleted 50 ms ago," which is acceptable — the agent's next call will reflect the deletion. Without this assertion, `mm_get` could throw `ENOENT` to the agent on a query that was valid moments earlier.
 
 **Step 5: Tests.**
-- `mv a.md b.md` (different paths, same inode) → updates the existing row's path, no ghost.
-- `vim a.md` → `:w` (atomic rename, same path) → row updated in place via the change-collapse rule, no ghost, no temp-row created.
-- `rm a.md` → row + text blobs removed after 1 s grace.
-- Concurrent moves of three files within 100 ms — each pairs to its own original by inode, no cross-contamination.
+- `mv a.md b.md` (different paths, same inode) → row's path AND id updated to `sha1('b.md')`; `text_blobs.source_id` migrated to new id; FTS row re-emitted with new id; `mm_find` for old path returns no results, for new path returns the renamed row.
+- **Sidecar-orphan check (regression test for the id-migration bug):** after the rename above, `SELECT COUNT(*) FROM text_blobs WHERE source_id = sha1('a.md')` returns 0; `SELECT COUNT(*) FROM text_blobs_fts WHERE source_id = sha1('a.md')` returns 0.
+- **Id-collision check:** after `mv a.md b.md`, create a new file at `a.md`. The new file's `id = sha1('a.md')` must not collide with the renamed row (which now has `id = sha1('b.md')`); insert succeeds.
+- `vim a.md` → `:w` (atomic rename, same path) → row updated in place via the change-collapse rule; id unchanged because path unchanged; no ghost row, no temp row, no sidecar migration.
+- `rm a.md` → after 1 s grace, all three of `text_blobs_fts`, `text_blobs`, and `file_records` rows for that id are gone (verified by direct SELECT, not just `mm_find`).
+- Concurrent moves of three files within 100 ms — each pairs to its own original by inode, no cross-contamination, all three id migrations land atomically.
 - Pre-existing row with `inode = NULL` is renamed → row is deleted and a new row is created (fallback behavior); validate this is what the test asserts, not silent breakage.
 - Migration idempotence (covered in Step 1's test).
 
@@ -443,4 +484,4 @@ git push -u origin phase-1-slice-3
 
 - ~~Should the writer queue's drain interval (50 ms) be tunable via `MM_WRITER_DRAIN_MS`?~~ **Resolved: no.** Hard-code 50 ms. Undocumented env knobs rot — six months later someone finds it set in `~/.bashrc` and can't remember what it does. If tuning is ever needed, add it then with a doc entry.
 - Should `mm_subscribe`'s design doc include an example `since`-based replay strategy? The internal event emitter doesn't persist events; replay across daemon restarts is not on the table without the activity-events table. Note in the design doc as Phase-4-or-later.
-- Does the worker pool need a graceful "drain in flight" mode for daemon shutdown? `close()` should `await` in-flight jobs before terminating workers; new jobs reject. Implement in Task 2 and document.
+- ~~Does the worker pool need a graceful "drain in flight" mode for daemon shutdown?~~ **Resolved: yes, locked into Task 2's API.** `pool.close()` MUST `await` in-flight jobs before terminating workers; new submissions after `close()` reject with `EXTRACTION_POOL_CLOSED`. This is required by Task 5's 6-step shutdown ordering (step 4 awaits pool drain into the writer queue) and is therefore part of the pool's contract, not an open question. Tested in Task 2 Step 3.
