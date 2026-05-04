@@ -82,36 +82,43 @@ export function scanFiles(
     ocrExtractions: 0,
   }
 
-  const processFile = (filePath: string, root: string): void => {
+  // BatchResult is what Pass A produces and Pass B consumes. Pass A runs
+  // outside any SQLite transaction so extractor work (which can take
+  // multi-second on PDFs) does not block the writer. Pass B runs the
+  // entire batch's writes inside a single transaction. Closes F-009 follow-
+  // up #1 — the watcher (Slice 3 Tasks 4–5) reuses Pass A's shape over a
+  // worker pool; the same writer queue applies Pass B.
+  type BatchResult = {
+    skipped: boolean                      // safeStat returned null
+    fingerprintMatched: boolean
+    insertParams?: Record<string, unknown>
+    blobs: Array<{ id: string; extractorType: string; content: string; kind: 'text' | 'metadata' | 'ocr' | 'reused-text' }>
+    sourceId?: string
+  }
+
+  const computeBatchResult = (filePath: string, root: string): BatchResult => {
     const stat = safeStat(filePath)
-    if (!stat) return
+    if (!stat) return { skipped: true, fingerprintMatched: false, blobs: [] }
     const id = stableId(filePath)
     const scanFingerprint = buildScanFingerprint(filePath, stat)
     const existingRow = findExisting.get(filePath) as { metadata_json: string | null } | undefined
     const existingMetadata = parseMetadata(existingRow?.metadata_json ?? null)
+    const blobs: BatchResult['blobs'] = []
 
     if (existingMetadata.scanFingerprint === scanFingerprint) {
-      summary.reusedFiles += 1
+      // Reused-fingerprint path: only re-extract text if the expected blob
+      // is missing. hasTextBlob is a SELECT — safe outside a transaction
+      // (WAL gives a consistent snapshot per statement).
       const expectedType = expectedTextExtractorType(filePath)
       if (expectedType && !hasTextBlob(db, id, 'file', expectedType)) {
         trace(`text-extract (reused fingerprint) start ${filePath}`)
         const textExtraction = extractTextFromFileResult(filePath)
         trace(`text-extract (reused fingerprint) done ${filePath}`)
-        if (
-          textExtraction.success &&
-          textExtraction.content &&
-          textExtraction.extractorType
-        ) {
-          upsertTextBlob(db, {
-            sourceId: id,
-            sourceType: 'file',
-            extractorType: textExtraction.extractorType,
-            content: textExtraction.content,
-          })
-          summary.textExtractions += 1
+        if (textExtraction.success && textExtraction.content && textExtraction.extractorType) {
+          blobs.push({ id, extractorType: textExtraction.extractorType, content: textExtraction.content, kind: 'reused-text' })
         }
       }
-      return
+      return { skipped: false, fingerprintMatched: true, blobs, sourceId: id }
     }
 
     if (isImageFile(filePath)) trace(`image-metadata start ${filePath}`)
@@ -122,9 +129,8 @@ export function scanFiles(
       lastIndexedAt: new Date().toISOString(),
       isImage: imageMetadata?.isImage ?? false,
     })
-    const metadataJson = JSON.stringify(metadata)
 
-    insert.run({
+    const insertParams: Record<string, unknown> = {
       id,
       path: filePath,
       name: path.basename(filePath),
@@ -135,33 +141,23 @@ export function scanFiles(
       modified_at: new Date(stat.mtimeMs || Date.now()).toISOString(),
       accessed_at: new Date(stat.atimeMs || Date.now()).toISOString(),
       source_root: root,
-      metadata_json: metadataJson,
-    })
-    summary.indexedFiles += 1
+      metadata_json: JSON.stringify(metadata),
+    }
 
     trace(`text-extract start ${filePath}`)
     const textExtraction = extractTextFromFileResult(filePath)
     trace(`text-extract done ${filePath}`)
     if (textExtraction.success && textExtraction.content && textExtraction.extractorType) {
-      upsertTextBlob(db, {
-        sourceId: id,
-        sourceType: 'file',
-        extractorType: textExtraction.extractorType,
-        content: textExtraction.content,
-      })
-      summary.textExtractions += 1
+      blobs.push({ id, extractorType: textExtraction.extractorType, content: textExtraction.content, kind: 'text' })
     }
 
     if (imageMetadata?.summaryText) {
-      upsertTextBlob(db, {
-        sourceId: id,
-        sourceType: 'file',
-        extractorType: imageMetadata.raw.isScreenshot === true
-          ? 'screenshot_metadata'
-          : 'image_metadata',
+      blobs.push({
+        id,
+        extractorType: imageMetadata.raw.isScreenshot === true ? 'screenshot_metadata' : 'image_metadata',
         content: imageMetadata.summaryText,
+        kind: 'metadata',
       })
-      summary.metadataExtractions += 1
     }
 
     if (imageMetadata?.isImage && shouldRunImageOcr(imageMetadata.raw, stat.size, ocrMode)) {
@@ -169,20 +165,33 @@ export function scanFiles(
       const imageOcr = extractImageOcr(filePath)
       trace(`image-ocr done ${filePath}`)
       if (imageOcr.success && imageOcr.content && imageOcr.extractorType) {
-        upsertTextBlob(db, {
-          sourceId: id,
-          sourceType: 'file',
-          extractorType: imageOcr.extractorType,
-          content: imageOcr.content,
-        })
-        summary.ocrExtractions += 1
+        blobs.push({ id, extractorType: imageOcr.extractorType, content: imageOcr.content, kind: 'ocr' })
       }
     }
+
+    return { skipped: false, fingerprintMatched: false, insertParams, blobs, sourceId: id }
   }
 
-  const processBatch = db.transaction((batch: string[], root: string) => {
-    for (const filePath of batch) {
-      processFile(filePath, root)
+  const applyBatch = db.transaction((results: BatchResult[]) => {
+    for (const r of results) {
+      if (r.skipped) continue
+      if (r.fingerprintMatched) {
+        summary.reusedFiles += 1
+      } else if (r.insertParams) {
+        insert.run(r.insertParams)
+        summary.indexedFiles += 1
+      }
+      for (const blob of r.blobs) {
+        upsertTextBlob(db, {
+          sourceId: blob.id,
+          sourceType: 'file',
+          extractorType: blob.extractorType,
+          content: blob.content,
+        })
+        if (blob.kind === 'text' || blob.kind === 'reused-text') summary.textExtractions += 1
+        else if (blob.kind === 'metadata') summary.metadataExtractions += 1
+        else if (blob.kind === 'ocr') summary.ocrExtractions += 1
+      }
     }
   })
 
@@ -203,7 +212,10 @@ export function scanFiles(
 
     for (let i = 0; i < entries.length; i += batchSize) {
       const batch = entries.slice(i, i + batchSize)
-      processBatch(batch, root)
+      // Pass A: extraction outside any transaction.
+      const results = batch.map(filePath => computeBatchResult(filePath, root))
+      // Pass B: one transaction applies all writes for the batch.
+      applyBatch(results)
       const processed = Math.min(i + batch.length, entries.length)
       trace(`committed batch: ${processed}/${entries.length} files in ${root}`)
       onProgress?.({ root, processed, total: entries.length })
