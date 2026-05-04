@@ -1,6 +1,7 @@
 import net from 'node:net'
 import fs from 'node:fs'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import { openDatabase } from '../index/db.js'
 import { call as daemonCall, isDaemonReachable } from './client.js'
@@ -13,11 +14,32 @@ import {
   type DaemonResponse,
 } from './protocol.js'
 import { startMcpHttp, type HttpListener } from '../mcp/http.js'
+import { createWatcher, type WatcherHandle } from './watcher.js'
+import {
+  createDebouncer,
+  createWriterQueue,
+  type Debouncer,
+  type WriterQueue,
+} from './watcherQueue.js'
+import {
+  createExtractionPool,
+  defaultExtractionPoolSize,
+  type ExtractionPool,
+} from './extractionPool.js'
+import { upsertTextBlob } from '../index/textBlobs.js'
 
 export type CreateServerOptions = {
   socketPath: string
   dbPath?: string
   pidPath?: string
+  // When provided + non-empty, the daemon spins up a chokidar watcher on
+  // these directories and live-indexes mutations through the
+  // extraction pool + writer queue. Slice 3 ship bar: any file mutation
+  // is searchable via mm_find within 5 seconds.
+  // Omitted (or empty array) → no watcher is constructed; the daemon
+  // serves whatever is already in the DB. This keeps every existing
+  // test that does not need a watcher from paying the build-dist cost.
+  roots?: string[]
 }
 
 export type DaemonServer = {
@@ -109,19 +131,121 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
     throw new Error(`mcp http failed to start: ${(cause as Error).message}`)
   }
 
+  // Live-indexing pipeline: only constructed when scan roots are
+  // provided. createExtractionPool() throws if dist/ isn't built —
+  // tests that don't pass roots avoid this dependency.
+  let pool: ExtractionPool | null = null
+  let writerQueue: WriterQueue | null = null
+  let debouncer: Debouncer | null = null
+  let watcher: WatcherHandle | null = null
+  let watcherErrorCount = 0
+  if (opts.roots && opts.roots.length > 0) {
+    try {
+      pool = createExtractionPool({ size: defaultExtractionPoolSize() })
+      const liveDbForQueue = db
+      writerQueue = createWriterQueue({
+        runTransaction: work => liveDbForQueue.transaction(work)(),
+      })
+      const livePool = pool
+      const liveQueue = writerQueue
+      debouncer = createDebouncer({
+        onJob: job => {
+          if (job.kind === 'delete') {
+            // Basic delete: Task 6 will replace this with the inode-paired
+            // version + 1s grace window. For Task 5 we just hard-delete so
+            // the live path stays correct for the simple unlink case.
+            liveQueue.push({
+              path: job.path,
+              apply: () => {
+                applyDeleteByPath(liveDbForQueue, job.path)
+              },
+            })
+            return
+          }
+          const stat = safeStat(job.path)
+          if (!stat) return
+          // runImageOcr: image policy lives on the main thread; the worker
+          // executes. Slice 3 keeps the existing scanner default (off for
+          // the live path; the scanner's screenshot detection runs at scan
+          // time only). Task 6 / Slice 5 may revisit this.
+          livePool.extract(job.path, { runImageOcr: false })
+            .then(result => {
+              liveQueue.push({
+                path: job.path,
+                apply: () => {
+                  applyExtractionResult(liveDbForQueue, job.path, opts.roots![0]!, stat, result)
+                },
+              })
+            })
+            .catch(err => {
+              // Worker pool errors are observable but not fatal — Task 5
+              // step 5 wires the degraded counter into the watcher error
+              // path; pool errors land here for now. Increment the same
+              // counter so a sustained failure mode shows up via _status.
+              watcherErrorCount++
+              process.stderr.write(`mmd: pool extract failed for ${job.path}: ${(err as Error).message}\n`)
+            })
+        },
+      })
+      const liveDebouncer = debouncer
+      watcher = createWatcher({
+        roots: opts.roots,
+        onEvent: ev => {
+          if (ev.kind === 'error') {
+            watcherErrorCount++
+            process.stderr.write(`mmd: watcher error: ${ev.error.message}\n`)
+            return
+          }
+          liveDebouncer.enqueue(ev)
+        },
+      })
+      await watcher.ready
+    } catch (cause) {
+      // Any failure in pipeline construction unwinds everything we built
+      // here so the caller gets a clean error.
+      try { await watcher?.close() } catch { /* ignore */ }
+      debouncer?.clear()
+      try { await pool?.close() } catch { /* ignore */ }
+      writerQueue?.close()
+      try { await httpListener.close() } catch { /* ignore */ }
+      await teardownPartial(server, db, opts.socketPath, opts.pidPath)
+      throw new Error(`watcher pipeline failed to start: ${(cause as Error).message}`)
+    }
+  }
+
   const liveServer = server
   const liveDb = db
   const liveHttp = httpListener
+  const livePool2 = pool
+  const liveQueue2 = writerQueue
+  const liveDebouncer2 = debouncer
+  const liveWatcher = watcher
   return {
     socketPath: opts.socketPath,
     close: async () => {
-      // Tear down the HTTP listener first so the discovery file is gone before
-      // anyone observing the socket sees the daemon disappear.
+      // 6-step shutdown ordering per Slice 3 plan Task 5 Step 2:
+      // 1. Stop watcher (no new events arrive)
+      if (liveWatcher) {
+        try { await liveWatcher.close() } catch { /* ignore */ }
+      }
+      // 2. Drain debouncer (pending timers fire into the pool)
+      if (liveDebouncer2) liveDebouncer2.flushAll()
+      // 3. Drain pool (in-flight extractions land in the writer queue)
+      if (livePool2) {
+        try { await livePool2.close() } catch { /* ignore */ }
+      }
+      // 4. Drain writer queue (final transactions commit)
+      if (liveQueue2) {
+        try { await liveQueue2.flush() } catch { /* ignore */ }
+        liveQueue2.close()
+      }
+      // 5. Close HTTP listener (existing path with closeAllConnections).
       try {
         await liveHttp.close()
       } catch {
         /* ignore */
       }
+      // 6. Force-close stragglers + close DB + remove pid + socket files.
       await new Promise<void>(resolve => {
         for (const socket of sockets) socket.destroy()
         sockets.clear()
@@ -146,6 +270,96 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
       })
     },
   }
+}
+
+// Live-path apply functions. These mirror what scanFiles' Pass B does
+// for one file, scoped down so the watcher pipeline can call them
+// without dragging in fast-glob or batch logic.
+
+function safeStat(filePath: string): fs.Stats | null {
+  try { return fs.statSync(filePath) } catch { return null }
+}
+
+function stableId(value: string): string {
+  return createHash('sha1').update(value).digest('hex')
+}
+
+type ExtractionResultShape = {
+  text: { success: boolean; content: string | null; extractorType: string | null } | null
+  image: { mimeType: string | null; isImage: boolean; isScreenshot: boolean; raw: Record<string, unknown>; summaryText: string | null } | null
+  ocr: { success: boolean; content: string | null; extractorType: string | null } | null
+}
+
+function applyExtractionResult(
+  db: Database.Database,
+  filePath: string,
+  root: string,
+  stat: fs.Stats,
+  result: ExtractionResultShape,
+): void {
+  const id = stableId(filePath)
+  const insert = db.prepare(`
+    INSERT INTO file_records (
+      id, path, name, extension, mime_type, size_bytes, created_at, modified_at, accessed_at, source_root, metadata_json
+    ) VALUES (
+      @id, @path, @name, @extension, @mime_type, @size_bytes, @created_at, @modified_at, @accessed_at, @source_root, @metadata_json
+    )
+    ON CONFLICT(path) DO UPDATE SET
+      name=excluded.name, extension=excluded.extension, mime_type=excluded.mime_type,
+      size_bytes=excluded.size_bytes, modified_at=excluded.modified_at, accessed_at=excluded.accessed_at,
+      source_root=excluded.source_root, metadata_json=excluded.metadata_json
+  `)
+  insert.run({
+    id,
+    path: filePath,
+    name: path.basename(filePath),
+    extension: path.extname(filePath).replace('.', ''),
+    mime_type: result.image?.mimeType ?? null,
+    size_bytes: stat.size,
+    created_at: new Date(stat.birthtimeMs || Date.now()).toISOString(),
+    modified_at: new Date(stat.mtimeMs || Date.now()).toISOString(),
+    accessed_at: new Date(stat.atimeMs || Date.now()).toISOString(),
+    source_root: root,
+    metadata_json: JSON.stringify({
+      lastIndexedAt: new Date().toISOString(),
+      isImage: result.image?.isImage ?? false,
+      ...(result.image?.raw ?? {}),
+    }),
+  })
+  if (result.text?.success && result.text.content && result.text.extractorType) {
+    upsertTextBlob(db, {
+      sourceId: id,
+      sourceType: 'file',
+      extractorType: result.text.extractorType,
+      content: result.text.content,
+    })
+  }
+  if (result.image?.summaryText) {
+    upsertTextBlob(db, {
+      sourceId: id,
+      sourceType: 'file',
+      extractorType: result.image.raw.isScreenshot === true ? 'screenshot_metadata' : 'image_metadata',
+      content: result.image.summaryText,
+    })
+  }
+  if (result.ocr?.success && result.ocr.content && result.ocr.extractorType) {
+    upsertTextBlob(db, {
+      sourceId: id,
+      sourceType: 'file',
+      extractorType: result.ocr.extractorType,
+      content: result.ocr.content,
+    })
+  }
+}
+
+function applyDeleteByPath(db: Database.Database, filePath: string): void {
+  // Three-table delete order from Slice 3 plan Task 6: FTS first, then
+  // text_blobs, then file_records. Same transaction (we're inside the
+  // writer queue's runTransaction wrapper).
+  const id = stableId(filePath)
+  db.prepare(`DELETE FROM text_blobs_fts WHERE source_id = ? AND source_type = 'file'`).run(id)
+  db.prepare(`DELETE FROM text_blobs WHERE source_id = ? AND source_type = 'file'`).run(id)
+  db.prepare(`DELETE FROM file_records WHERE id = ?`).run(id)
 }
 
 async function teardownPartial(
