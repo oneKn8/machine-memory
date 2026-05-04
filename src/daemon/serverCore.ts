@@ -188,6 +188,86 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
         },
       })
       const liveDebouncer = debouncer
+      const liveDbForPair = db
+      // Pending unlinks awaiting an inode-paired add (true rename) or
+      // grace-expiry plain delete. Per Slice 3 plan Task 6 decision
+      // table — handles cross-path rename via (ino,dev) match within
+      // 1 s, falls through to the debouncer for plain delete after
+      // grace expiry. Atomic-rename-as-change (unlink+add for same
+      // path) is also collapsed here before the debouncer sees either.
+      type PendingUnlink = {
+        path: string
+        inode: number | null
+        device: number | null
+        timer: NodeJS.Timeout
+      }
+      const pendingUnlinks = new Map<string, PendingUnlink>()
+      const RENAME_GRACE_MS = 1000
+
+      function clearPendingUnlink(p: string): PendingUnlink | undefined {
+        const pu = pendingUnlinks.get(p)
+        if (pu) {
+          clearTimeout(pu.timer)
+          pendingUnlinks.delete(p)
+        }
+        return pu
+      }
+
+      function onUnlink(p: string): void {
+        // Look up the row's stored inode+device synchronously before the
+        // grace timer starts. SELECTs are safe outside any transaction
+        // (WAL gives consistent per-statement snapshots).
+        const row = liveDbForPair.prepare(
+          'SELECT inode, device FROM file_records WHERE path = ?',
+        ).get(p) as { inode: number | null; device: number | null } | undefined
+        const pu: PendingUnlink = {
+          path: p,
+          inode: row?.inode ?? null,
+          device: row?.device ?? null,
+          timer: setTimeout(() => {
+            // Grace expired with no matching add — this is a plain
+            // delete. Forward to the debouncer.
+            pendingUnlinks.delete(p)
+            liveDebouncer.enqueue({ kind: 'unlink', path: p })
+          }, RENAME_GRACE_MS),
+        }
+        pendingUnlinks.set(p, pu)
+      }
+
+      function onAdd(p: string, addEvent: { kind: 'add'; path: string; stats: fs.Stats }): void {
+        // Rule 1 — atomic-rename-as-change: unlink(P) then add(P) for
+        // the SAME path within grace → collapse to a single change(P).
+        const samePath = clearPendingUnlink(p)
+        if (samePath) {
+          liveDebouncer.enqueue({ kind: 'change', path: p, stats: addEvent.stats })
+          return
+        }
+        // Rule 2 — inode-paired rename: scan pending unlinks for an
+        // (ino,dev) match. If found, the row's id and path migrate
+        // atomically inside the writer-queue transaction.
+        const incomingIno = Number(addEvent.stats.ino)
+        const incomingDev = Number(addEvent.stats.dev)
+        for (const [oldPath, pu] of pendingUnlinks) {
+          if (pu.inode === null || pu.device === null) continue
+          if (pu.inode === incomingIno && pu.device === incomingDev) {
+            clearPendingUnlink(oldPath)
+            // Push the rename directly to the writer queue (skip pool
+            // — no extraction work; we're just migrating the existing
+            // row's id + path + sidecars).
+            liveQueue.push({
+              path: p,
+              apply: () => {
+                applyRename(liveDbForPair, oldPath, p, addEvent.stats)
+              },
+            })
+            return
+          }
+        }
+        // Rule 3 — no pairing match; treat as a fresh add and let the
+        // normal debounce → pool → writer pipeline handle it.
+        liveDebouncer.enqueue(addEvent)
+      }
+
       watcher = createWatcher({
         roots: opts.roots,
         onEvent: ev => {
@@ -196,6 +276,9 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
             process.stderr.write(`mmd: watcher error: ${ev.error.message}\n`)
             return
           }
+          if (ev.kind === 'unlink') return onUnlink(ev.path)
+          if (ev.kind === 'add') return onAdd(ev.path, ev)
+          // change: pass straight through
           liveDebouncer.enqueue(ev)
         },
       })
@@ -298,16 +381,21 @@ function applyExtractionResult(
   result: ExtractionResultShape,
 ): void {
   const id = stableId(filePath)
+  // ino can be a BigInt on some platforms — coerce to safe Number. JS
+  // Number can hold inode + device values comfortably for any real fs.
+  const inode = Number(stat.ino)
+  const device = Number(stat.dev)
   const insert = db.prepare(`
     INSERT INTO file_records (
-      id, path, name, extension, mime_type, size_bytes, created_at, modified_at, accessed_at, source_root, metadata_json
+      id, path, name, extension, mime_type, size_bytes, created_at, modified_at, accessed_at, source_root, metadata_json, inode, device
     ) VALUES (
-      @id, @path, @name, @extension, @mime_type, @size_bytes, @created_at, @modified_at, @accessed_at, @source_root, @metadata_json
+      @id, @path, @name, @extension, @mime_type, @size_bytes, @created_at, @modified_at, @accessed_at, @source_root, @metadata_json, @inode, @device
     )
     ON CONFLICT(path) DO UPDATE SET
       name=excluded.name, extension=excluded.extension, mime_type=excluded.mime_type,
       size_bytes=excluded.size_bytes, modified_at=excluded.modified_at, accessed_at=excluded.accessed_at,
-      source_root=excluded.source_root, metadata_json=excluded.metadata_json
+      source_root=excluded.source_root, metadata_json=excluded.metadata_json,
+      inode=excluded.inode, device=excluded.device
   `)
   insert.run({
     id,
@@ -325,6 +413,8 @@ function applyExtractionResult(
       isImage: result.image?.isImage ?? false,
       ...(result.image?.raw ?? {}),
     }),
+    inode,
+    device,
   })
   if (result.text?.success && result.text.content && result.text.extractorType) {
     upsertTextBlob(db, {
@@ -360,6 +450,62 @@ function applyDeleteByPath(db: Database.Database, filePath: string): void {
   db.prepare(`DELETE FROM text_blobs_fts WHERE source_id = ? AND source_type = 'file'`).run(id)
   db.prepare(`DELETE FROM text_blobs WHERE source_id = ? AND source_type = 'file'`).run(id)
   db.prepare(`DELETE FROM file_records WHERE id = ?`).run(id)
+}
+
+function applyRename(
+  db: Database.Database,
+  oldPath: string,
+  newPath: string,
+  newStat: fs.Stats,
+): void {
+  // Id-migration SQL block from Slice 3 plan Task 6 §Identity strategy.
+  // file_records.id is sha1(path) and text_blobs.source_id keys to
+  // that id, so a path change forces an id migration across every
+  // dependent table — preserves the implicit id == sha1(path)
+  // invariant and avoids PK collision when a new file later lands at
+  // the old path.
+  const oldId = stableId(oldPath)
+  const newId = stableId(newPath)
+  const newIno = Number(newStat.ino)
+  const newDev = Number(newStat.dev)
+
+  // Update file_records — id, path, inode, device.
+  db.prepare(`
+    UPDATE file_records
+    SET id = ?, path = ?, name = ?, extension = ?, modified_at = ?, accessed_at = ?, inode = ?, device = ?
+    WHERE id = ?
+  `).run(
+    newId,
+    newPath,
+    path.basename(newPath),
+    path.extname(newPath).replace('.', ''),
+    new Date(newStat.mtimeMs || Date.now()).toISOString(),
+    new Date(newStat.atimeMs || Date.now()).toISOString(),
+    newIno,
+    newDev,
+    oldId,
+  )
+
+  // Migrate text_blobs.source_id.
+  db.prepare(`
+    UPDATE text_blobs SET source_id = ? WHERE source_id = ? AND source_type = 'file'
+  `).run(newId, oldId)
+
+  // FTS5 contentless tables can't be updated in place — delete + re-emit
+  // from the migrated text_blobs. (See textBlobs.ts upsert for the same
+  // delete-then-insert pattern.)
+  db.prepare(`
+    DELETE FROM text_blobs_fts WHERE source_id = ? AND source_type = 'file'
+  `).run(oldId)
+  const blobs = db.prepare(`
+    SELECT source_id, source_type, extractor_type, content
+    FROM text_blobs WHERE source_id = ? AND source_type = 'file'
+  `).all(newId) as Array<{ source_id: string; source_type: string; extractor_type: string; content: string }>
+  const insertFts = db.prepare(`
+    INSERT INTO text_blobs_fts (source_id, source_type, extractor_type, content)
+    VALUES (?, ?, ?, ?)
+  `)
+  for (const b of blobs) insertFts.run(b.source_id, b.source_type, b.extractor_type, b.content)
 }
 
 async function teardownPartial(
