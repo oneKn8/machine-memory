@@ -71,6 +71,12 @@ type WorkerSlot = {
   worker: Worker
   busy: PendingJob | null
   ready: Promise<void>
+  // dead = true when the worker has crashed or its spawn failed. Once
+  // dead, the slot is never dispatched into again. close() treats dead
+  // slots as drained (does not wait on them) and skips posting shutdown
+  // to them. Without this, a single spawn failure leaks a slot of
+  // capacity for the daemon's lifetime AND can deadlock close().
+  dead: boolean
 }
 
 export function createExtractionPool(opts: ExtractionPoolOptions): ExtractionPool {
@@ -103,6 +109,22 @@ export function createExtractionPool(opts: ExtractionPoolOptions): ExtractionPoo
   const slots: WorkerSlot[] = []
 
   function dispatch(slot: WorkerSlot): void {
+    if (slot.dead) {
+      // Try to find a live alternative for whatever's queued.
+      const job = queue.shift()
+      if (job) {
+        const live = slots.find(s => !s.dead && !s.busy)
+        if (live) {
+          live.busy = job
+          live.worker.postMessage({ kind: 'extract', jobId: job.jobId, filePath: job.filePath, options: job.options })
+        } else {
+          // No live slot to take this job. Reject so the caller knows.
+          job.reject(new ExtractionPoolClosedError())
+        }
+      }
+      maybeResolveDrain()
+      return
+    }
     if (closed && queue.length === 0) {
       maybeResolveDrain()
       return
@@ -125,6 +147,9 @@ export function createExtractionPool(opts: ExtractionPoolOptions): ExtractionPoo
 
   function maybeResolveDrain(): void {
     if (!closed || drainResolve === null) return
+    // Treat dead slots as drained — they cannot hold in-flight work.
+    // Without this the close() promise can hang forever if a worker
+    // crashed mid-shutdown.
     if (queue.length === 0 && slots.every(s => s.busy === null)) {
       const resolve = drainResolve
       drainResolve = null
@@ -145,7 +170,7 @@ export function createExtractionPool(opts: ExtractionPoolOptions): ExtractionPoo
       worker.on('message', onMsg)
       worker.once('error', reject)
     })
-    const slot: WorkerSlot = { worker, busy: null, ready }
+    const slot: WorkerSlot = { worker, busy: null, ready, dead: false }
 
     worker.on('message', (m: WorkerOutbound) => {
       if (m.kind === 'ready') return
@@ -164,10 +189,17 @@ export function createExtractionPool(opts: ExtractionPoolOptions): ExtractionPoo
     worker.on('error', err => {
       const inflight = slot.busy
       slot.busy = null
+      slot.dead = true
       if (inflight) inflight.reject(err)
+      // Crucial: notify the drain barrier so close() does not hang
+      // waiting for a worker that will never produce another result.
+      maybeResolveDrain()
+      // Try to give any queued work to a still-live slot.
+      const live = slots.find(s => !s.dead && !s.busy)
+      if (live) dispatch(live)
       // A worker that errored is gone; do not respawn for now (caller can
-      // close + recreate the pool). Slice 3 plan Task 5 Step 5 handles the
-      // counter/degraded-state wiring at the daemon level.
+      // close + recreate the pool). Slice 3 plan Task 5 Step 5 handles
+      // the counter/degraded-state wiring at the daemon level.
     })
 
     return slot
@@ -185,7 +217,7 @@ export function createExtractionPool(opts: ExtractionPoolOptions): ExtractionPoo
       // the queue as falsely-full because the cap-check happens before
       // dispatch had a chance to drain.
       for (const slot of slots) {
-        if (slot.busy) continue
+        if (slot.dead || slot.busy) continue
         slot.busy = job
         slot.ready.then(() => {
           const msg: WorkerInbound = {
@@ -196,13 +228,17 @@ export function createExtractionPool(opts: ExtractionPoolOptions): ExtractionPoo
           }
           slot.worker.postMessage(msg)
         }).catch(err => {
+          // Worker spawn failed — mark the slot dead so we never try
+          // to dispatch through it again, then reject this job and
+          // notify the drain barrier (close() may be waiting on it).
+          slot.dead = true
           slot.busy = null
           reject(err)
-          dispatch(slot)
+          maybeResolveDrain()
         })
         return
       }
-      // All slots busy → queue, subject to backpressure cap.
+      // All slots busy or dead → queue, subject to backpressure cap.
       if (queue.length >= maxQueueLength) {
         reject(new ExtractionQueueFullError(maxQueueLength))
         return
@@ -220,11 +256,20 @@ export function createExtractionPool(opts: ExtractionPoolOptions): ExtractionPoo
       drainResolve = resolve
       maybeResolveDrain()
     })
-    // Now post shutdown to each worker and await its exit.
+    // Now post shutdown to each LIVE worker and await its exit. Dead
+    // slots have no live worker; postMessage to them would fail.
     await Promise.all(slots.map(slot => new Promise<void>(resolve => {
+      if (slot.dead) { resolve(); return }
       slot.worker.once('exit', () => resolve())
       const msg: WorkerInbound = { kind: 'shutdown' }
-      slot.worker.postMessage(msg)
+      try {
+        slot.worker.postMessage(msg)
+      } catch {
+        // Worker may have died between the dead-check and the post.
+        // Force-terminate as a fallback.
+        slot.worker.terminate().finally(() => resolve())
+        return
+      }
       // Safety: if a worker doesn't exit in 2 s, terminate it.
       const t = setTimeout(() => {
         slot.worker.terminate().finally(() => resolve())

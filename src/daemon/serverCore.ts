@@ -162,8 +162,8 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
             })
             return
           }
-          const stat = safeStat(job.path)
-          if (!stat) return
+          const dispatchStat = safeStat(job.path)
+          if (!dispatchStat) return
           // runImageOcr: image policy lives on the main thread; the worker
           // executes. Slice 3 keeps the existing scanner default (off for
           // the live path; the scanner's screenshot detection runs at scan
@@ -173,7 +173,15 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
               liveQueue.push({
                 path: job.path,
                 apply: () => {
-                  applyExtractionResult(liveDbForQueue, job.path, opts.roots![0]!, stat, result)
+                  // Re-stat inside the writer transaction. Closes the
+                  // ghost-row race: if a delete arrived between extract
+                  // dispatch and result, the file is gone and we MUST NOT
+                  // resurrect it as a row. The writer transaction is the
+                  // only ordering boundary that gives us a true answer
+                  // about "does this file still exist."
+                  const fresh = safeStat(job.path)
+                  if (!fresh) return
+                  applyExtractionResult(liveDbForQueue, job.path, opts.roots![0]!, fresh, result)
                 },
               })
             })
@@ -202,13 +210,23 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
         timer: NodeJS.Timeout
       }
       const pendingUnlinks = new Map<string, PendingUnlink>()
+      // Secondary index: (inode, device) -> path of pending unlink. Lets
+      // onAdd find a paired unlink in O(1) instead of scanning every
+      // pending entry. Without this, a `git checkout` triggering thousands
+      // of unlinks within the grace window would make every subsequent add
+      // walk the entire pending map on the main thread, blocking _ping.
+      const pendingByInode = new Map<string, string>()
       const RENAME_GRACE_MS = 1000
+      const pairKey = (ino: number, dev: number): string => `${ino}:${dev}`
 
       function clearPendingUnlink(p: string): PendingUnlink | undefined {
         const pu = pendingUnlinks.get(p)
         if (pu) {
           clearTimeout(pu.timer)
           pendingUnlinks.delete(p)
+          if (pu.inode !== null && pu.device !== null) {
+            pendingByInode.delete(pairKey(pu.inode, pu.device))
+          }
         }
         return pu
       }
@@ -220,18 +238,27 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
         const row = liveDbForPair.prepare(
           'SELECT inode, device FROM file_records WHERE path = ?',
         ).get(p) as { inode: number | null; device: number | null } | undefined
+        const inode = row?.inode ?? null
+        const device = row?.device ?? null
         const pu: PendingUnlink = {
           path: p,
-          inode: row?.inode ?? null,
-          device: row?.device ?? null,
+          inode,
+          device,
           timer: setTimeout(() => {
-            // Grace expired with no matching add — this is a plain
-            // delete. Forward to the debouncer.
+            // Guard against a faster onAdd that already cleared this
+            // entry between timer arming and execution.
+            if (!pendingUnlinks.has(p)) return
             pendingUnlinks.delete(p)
+            if (inode !== null && device !== null) {
+              pendingByInode.delete(pairKey(inode, device))
+            }
             liveDebouncer.enqueue({ kind: 'unlink', path: p })
           }, RENAME_GRACE_MS),
         }
         pendingUnlinks.set(p, pu)
+        if (inode !== null && device !== null) {
+          pendingByInode.set(pairKey(inode, device), p)
+        }
       }
 
       function onAdd(p: string, addEvent: { kind: 'add'; path: string; stats: fs.Stats }): void {
@@ -242,26 +269,37 @@ export async function createServer(opts: CreateServerOptions): Promise<DaemonSer
           liveDebouncer.enqueue({ kind: 'change', path: p, stats: addEvent.stats })
           return
         }
-        // Rule 2 — inode-paired rename: scan pending unlinks for an
-        // (ino,dev) match. If found, the row's id and path migrate
-        // atomically inside the writer-queue transaction.
+        // Rule 2 — inode-paired rename: O(1) lookup via the secondary
+        // index. If found, migrate the row's id+path inside one writer
+        // transaction.
         const incomingIno = Number(addEvent.stats.ino)
         const incomingDev = Number(addEvent.stats.dev)
-        for (const [oldPath, pu] of pendingUnlinks) {
-          if (pu.inode === null || pu.device === null) continue
-          if (pu.inode === incomingIno && pu.device === incomingDev) {
-            clearPendingUnlink(oldPath)
-            // Push the rename directly to the writer queue (skip pool
-            // — no extraction work; we're just migrating the existing
-            // row's id + path + sidecars).
-            liveQueue.push({
-              path: p,
-              apply: () => {
-                applyRename(liveDbForPair, oldPath, p, addEvent.stats)
-              },
-            })
-            return
-          }
+        const matchedOldPath = pendingByInode.get(pairKey(incomingIno, incomingDev))
+        if (matchedOldPath !== undefined) {
+          const oldPath = matchedOldPath
+          clearPendingUnlink(oldPath)
+          // Push the rename directly to the writer queue (skip pool —
+          // no extraction work; we're just migrating the existing row's
+          // id + path + sidecars).
+          liveQueue.push({
+            path: p,
+            apply: () => {
+              // Re-stat inside the writer transaction (same reason as
+              // the upsert path above): the chokidar stats can be
+              // stale by the time we apply if the file was replaced
+              // again in the grace window. The writer transaction is
+              // the source of truth for what's actually on disk.
+              const fresh = safeStat(p)
+              if (!fresh) {
+                // The "new" path vanished too — treat as a delete of
+                // the original. The pairing was a transient match.
+                applyDeleteByPath(liveDbForPair, oldPath)
+                return
+              }
+              applyRename(liveDbForPair, oldPath, p, fresh)
+            },
+          })
+          return
         }
         // Rule 3 — no pairing match; treat as a fresh add and let the
         // normal debounce → pool → writer pipeline handle it.
@@ -397,6 +435,26 @@ function applyExtractionResult(
       source_root=excluded.source_root, metadata_json=excluded.metadata_json,
       inode=excluded.inode, device=excluded.device
   `)
+  // Merge with existing metadata so the watcher's upsert does not
+  // discard fields the scanner wrote (notably scanFingerprint, which
+  // gates the F-009 reuse short-circuit on the next scan). Read happens
+  // inside the writer transaction so the read-then-write is atomic.
+  const existingRow = db.prepare('SELECT metadata_json FROM file_records WHERE path = ?')
+    .get(filePath) as { metadata_json: string | null } | undefined
+  const existingMeta: Record<string, unknown> = (() => {
+    if (!existingRow?.metadata_json) return {}
+    try {
+      const parsed = JSON.parse(existingRow.metadata_json) as unknown
+      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {}
+    } catch { return {} }
+  })()
+  const mergedMeta: Record<string, unknown> = {
+    ...existingMeta,
+    ...(result.image?.raw ?? {}),
+    lastIndexedAt: new Date().toISOString(),
+    isImage: result.image?.isImage ?? false,
+    scanFingerprint: `${filePath}:${stat.size}:${Math.floor(stat.mtimeMs)}`,
+  }
   insert.run({
     id,
     path: filePath,
@@ -408,11 +466,7 @@ function applyExtractionResult(
     modified_at: new Date(stat.mtimeMs || Date.now()).toISOString(),
     accessed_at: new Date(stat.atimeMs || Date.now()).toISOString(),
     source_root: root,
-    metadata_json: JSON.stringify({
-      lastIndexedAt: new Date().toISOString(),
-      isImage: result.image?.isImage ?? false,
-      ...(result.image?.raw ?? {}),
-    }),
+    metadata_json: JSON.stringify(mergedMeta),
     inode,
     device,
   })

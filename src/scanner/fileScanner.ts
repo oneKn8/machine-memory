@@ -53,20 +53,21 @@ export function scanFiles(
 
   const insert = db.prepare(`
     INSERT INTO file_records (
-      id, path, name, extension, mime_type, size_bytes, created_at, modified_at, accessed_at, source_root, metadata_json
+      id, path, name, extension, mime_type, size_bytes, created_at, modified_at, accessed_at, source_root, metadata_json, inode, device
     ) VALUES (
-      @id, @path, @name, @extension, @mime_type, @size_bytes, @created_at, @modified_at, @accessed_at, @source_root, @metadata_json
+      @id, @path, @name, @extension, @mime_type, @size_bytes, @created_at, @modified_at, @accessed_at, @source_root, @metadata_json, @inode, @device
     )
     ON CONFLICT(path) DO UPDATE SET
       name=excluded.name,
       extension=excluded.extension,
       mime_type=excluded.mime_type,
       size_bytes=excluded.size_bytes,
-      created_at=excluded.created_at,
       modified_at=excluded.modified_at,
       accessed_at=excluded.accessed_at,
       source_root=excluded.source_root,
-      metadata_json=excluded.metadata_json
+      metadata_json=excluded.metadata_json,
+      inode=excluded.inode,
+      device=excluded.device
   `)
   const findExisting = db.prepare(`
     SELECT metadata_json
@@ -142,6 +143,12 @@ export function scanFiles(
       accessed_at: new Date(stat.atimeMs || Date.now()).toISOString(),
       source_root: root,
       metadata_json: JSON.stringify(metadata),
+      // inode + device populated on every scan upsert so subsequent
+      // live-path renames can use inode pairing instead of falling
+      // back to delete+add. Coerce via Number() to handle BigInt
+      // platforms.
+      inode: Number(stat.ino),
+      device: Number(stat.dev),
     }
 
     trace(`text-extract start ${filePath}`)

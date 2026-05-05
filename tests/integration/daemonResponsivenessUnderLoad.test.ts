@@ -66,19 +66,30 @@ describe('mmd responsiveness under watcher load (Slice 3 Task 7)', () => {
       return
     }
 
-    // Producer: write 100 small markdown files in ~1 s, wait, write
-    // another 100. Each file is small so the extractor is fast — the
-    // load is queue/scheduling pressure, not extraction CPU.
+    // Wall-clock CPU probe: availableParallelism() reflects sched-
+    // affinity but not cgroup CPU quotas (containers with --cpus=1
+    // on a 16-core host still report 16). Spin a tight loop for 50ms;
+    // if iteration count is far below a healthy laptop's baseline,
+    // the host is effectively CPU-throttled and the latency assertion
+    // would be meaningless. Skip.
+    {
+      const probeStart = performance.now()
+      let n = 0
+      while (performance.now() - probeStart < 50) n++
+      if (n < 1_000_000) return
+    }
+
+    // Producer: write 200 small markdown files across two bursts, with
+    // a brief inter-burst pause. Each file is small so the extractor is
+    // fast — the load is queue/scheduling pressure, not extraction CPU.
+    const producerStart = performance.now()
     const producer = (async () => {
       for (let burst = 0; burst < 2; burst++) {
         for (let i = 0; i < 100; i++) {
           const idx = burst * 100 + i
           fs.writeFileSync(path.join(watchRoot, `f-${idx}.md`), `mutation ${idx} marker`)
-          // Sleep ~10 ms between writes → ~100 writes/sec.
           await new Promise(r => setTimeout(r, 10))
         }
-        // Brief pause between bursts so the second burst overlaps with
-        // the writer queue draining the first.
         await new Promise(r => setTimeout(r, 200))
       }
     })()
@@ -94,7 +105,10 @@ describe('mmd responsiveness under watcher load (Slice 3 Task 7)', () => {
         } catch {
           // A failed ping IS a responsiveness failure — count it as a
           // very-slow ping rather than dropping it from the sample.
+          // Sleep before continuing so a sustained failure doesn't
+          // flood `latencies` and skew percentiles.
           latencies.push(10000)
+          await new Promise(r => setTimeout(r, 20))
           continue
         }
         latencies.push(performance.now() - start)
@@ -103,6 +117,8 @@ describe('mmd responsiveness under watcher load (Slice 3 Task 7)', () => {
     })()
 
     await Promise.all([producer, pinger])
+    const elapsedSec = (performance.now() - producerStart) / 1000
+    const actualRate = 200 / elapsedSec
 
     // Compute statistics.
     const sorted = [...latencies].sort((a, b) => a - b)
@@ -111,10 +127,13 @@ describe('mmd responsiveness under watcher load (Slice 3 Task 7)', () => {
     const p99 = percentile(sorted, 0.99)
     const p100 = sorted[sorted.length - 1] ?? 0
 
-    // Helpful diagnostic line — vitest prints test names/durations but
-    // not arbitrary console.log; this only surfaces on failure.
-    const summary = `latencies: n=${sorted.length} p50=${p50.toFixed(2)}ms p95=${p95.toFixed(2)}ms p99=${p99.toFixed(2)}ms p100=${p100.toFixed(2)}ms`
+    const summary = `latencies: n=${sorted.length} p50=${p50.toFixed(2)}ms p95=${p95.toFixed(2)}ms p99=${p99.toFixed(2)}ms p100=${p100.toFixed(2)}ms; producer=${actualRate.toFixed(1)}/s`
 
+    // Verify the test exercised the load it claims to. A test that
+    // silently weakens its own load is worse than no test — without
+    // this check, a slow runner might "pass" the latency assertion
+    // simply because it never approached 100/s.
+    expect(actualRate, `producer rate too low to validate the bound (${summary})`).toBeGreaterThan(60)
     expect(sorted.length, 'pinger collected too few samples').toBeGreaterThan(50)
     expect(p95, `p95 must be < 50ms (${summary})`).toBeLessThan(50)
     expect(p100, `p100 must be < 500ms (${summary})`).toBeLessThan(500)

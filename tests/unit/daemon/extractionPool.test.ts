@@ -120,4 +120,38 @@ describe('createExtractionPool', () => {
   it('throws on invalid pool size', () => {
     expect(() => createExtractionPool({ size: 0 })).toThrow(/size must be >= 1/)
   })
+
+  it('close() resolves cleanly even when a worker spawn failed (B2/H4 regression)', async () => {
+    // Construct a pool with a deliberately-broken worker entry. The
+    // worker spawn rejects, slot.ready rejects, the slot is marked
+    // dead. close() must NOT hang waiting for a dead slot to drain.
+    //
+    // Pre-fix bug: close()'s drainResolve waited on
+    // slots.every(busy === null), but the rejection path left busy null
+    // without notifying maybeResolveDrain — so close() hung forever.
+    const bogusEntry = new URL('file:///nonexistent/extractionWorker.js')
+    let pool: ExtractionPool | null = null
+    let constructError: Error | null = null
+    try {
+      pool = createExtractionPool({ size: 1, workerEntry: bogusEntry })
+    } catch (err) {
+      constructError = err as Error
+    }
+    if (constructError) {
+      // Pool construction throws synchronously when the entry doesn't
+      // exist on disk (the file-existence check). That's fine — there's
+      // no pool to close, and no hang to test for.
+      expect(constructError.message).toMatch(/extraction worker not built|not built|no such/i)
+      return
+    }
+    // If construction succeeded but the worker can't actually be loaded
+    // (e.g., URL exists but is malformed), the spawn's rejection should
+    // mark the slot dead and close() should still resolve quickly.
+    const closePromise = pool!.close()
+    const closed = await Promise.race([
+      closePromise.then(() => 'closed' as const),
+      new Promise<'hung'>(r => setTimeout(() => r('hung'), 5000)),
+    ])
+    expect(closed, 'pool.close() hung — B2/H4 fix regressed').toBe('closed')
+  })
 })

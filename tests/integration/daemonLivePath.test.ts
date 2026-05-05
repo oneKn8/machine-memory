@@ -131,6 +131,36 @@ describe('mmd live-indexing path (Slice 3 Task 5)', () => {
     expect(found.count).toBe(1)
   })
 
+  it('file deleted between extract dispatch and result does NOT create a ghost row (B1 regression)', async () => {
+    // Sequence: write file (triggers extract), delete file before
+    // extraction can land. The pre-fix bug was that the late-arriving
+    // extract.then(...) would push an UPSERT into the writer queue,
+    // which would INSERT a fresh row for a now-nonexistent file —
+    // permanent ghost.
+    //
+    // Fix is a re-stat inside the writer apply: if the file is gone
+    // when the apply runs, drop the result without writing.
+    const filePath = path.join(watchRoot, 'transient.md')
+    fs.writeFileSync(filePath, 'transient ghost-check token-PQRST')
+
+    // Wait briefly for the watcher to enqueue the extract job (debounce
+    // 250ms + fixed overhead). Then delete the file before the writer
+    // queue can apply the result. The 1s grace + debounce gives us a
+    // generous window where the extract is in flight but the apply has
+    // not yet run.
+    await new Promise(r => setTimeout(r, 100))
+    fs.unlinkSync(filePath)
+
+    // Wait long enough for any pending extract+apply to fully resolve
+    // AND for the unlink to propagate through the grace window + writer.
+    await new Promise(r => setTimeout(r, 2500))
+
+    // Assert: the file is NOT in mm_find. A pre-fix run would return
+    // the ghost row.
+    const results = await daemonCall<SearchResult[]>(daemon!.socketPath, 'mm_find', { query: 'PQRST' })
+    expect(results.find(r => r.path === filePath), 'ghost row present — B1 fix regressed').toBeUndefined()
+  })
+
   it('rename does not orphan text_blobs / FTS rows for the old id (sidecar-orphan regression)', async () => {
     // Same as above but verifies via direct DB inspection that the old
     // id has zero rows in text_blobs and text_blobs_fts post-rename.
