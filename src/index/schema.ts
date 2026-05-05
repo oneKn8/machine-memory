@@ -10,7 +10,16 @@ CREATE TABLE IF NOT EXISTS file_records (
   modified_at TEXT,
   accessed_at TEXT,
   source_root TEXT,
-  metadata_json TEXT DEFAULT '{}'
+  metadata_json TEXT DEFAULT '{}',
+  -- inode + device added by Slice 3 Task 6 for inode-paired rename
+  -- detection (closes F-011). Pre-existing rows have NULL until the
+  -- watcher or scanner next touches their path; the rename pairing
+  -- has a documented NULL-fallback that self-heals on next event.
+  -- Both columns are also added by migrations.ts for DBs created
+  -- before this change; the IF NOT EXISTS guard above only creates
+  -- the table on a fresh install.
+  inode INTEGER,
+  device INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS repo_records (

@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import { resolveDatabasePath } from '../config/paths.js'
 import { SCHEMA_SQL } from './schema.js'
+import { runMigrations } from './migrations.js'
 
 export function openDatabase(customPath?: string): Database.Database {
   const dbPath = resolveDatabasePath(customPath)
@@ -22,5 +23,9 @@ export function openDatabase(customPath?: string): Database.Database {
   db.pragma('journal_size_limit = 67108864')  // 64 MB WAL cap
 
   db.exec(SCHEMA_SQL)
+  // Migrations after SCHEMA_SQL: SCHEMA_SQL is CREATE IF NOT EXISTS
+  // only and never alters; migrations.ts owns column adds and any
+  // future schema evolution keyed off PRAGMA user_version.
+  runMigrations(db)
   return db
 }
