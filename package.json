@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "better-sqlite3": "^11.10.0",
+    "better-sqlite3": "^12.1.0",
     "chokidar": "^5.0.0",
     "commander": "^14.0.1",
     "fast-glob": "^3.3.3",
